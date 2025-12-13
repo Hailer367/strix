@@ -2,11 +2,16 @@ import os
 
 
 # Roo Code model aliases for easy configuration
+# Reference: https://docs.roocode.com/providers/roo-code-cloud
 ROOCODE_MODEL_ALIASES = {
     "roocode/grok": "roocode/grok-code-fast-1",
-    "roocode/supernova": "roocode/code-supernova",
+    "roocode/supernova": "roocode/roo/code-supernova",
     "roocode/fast": "roocode/grok-code-fast-1",
-    "roocode/advanced": "roocode/code-supernova",
+    "roocode/advanced": "roocode/roo/code-supernova",
+    # Direct model names
+    "grok-code-fast-1": "roocode/grok-code-fast-1",
+    "roo/code-supernova": "roocode/roo/code-supernova",
+    "code-supernova": "roocode/roo/code-supernova",
 }
 
 

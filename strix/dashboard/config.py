@@ -241,20 +241,30 @@ DEFAULT_FOCUS_AREAS = [
 
 
 # Available Roo Code models
+# These are the default models available from Roo Code Cloud
+# Reference: https://docs.roocode.com/providers/roo-code-cloud
 ROOCODE_MODELS = {
     "grok-code-fast-1": {
-        "name": "Grok Code Fast 1",
+        "name": "grok-code-fast-1",
+        "display_name": "Grok Code Fast 1",
         "description": "Fast coding model - Best for quick scans and iterations",
         "context_window": 262000,
         "speed": "fast",
         "cost": "free",
+        "free": True,
+        "provider": "xai",
+        "capabilities": ["code", "chat"],
     },
     "roo/code-supernova": {
-        "name": "Code Supernova",
+        "name": "roo/code-supernova",
+        "display_name": "Code Supernova",
         "description": "Advanced model - Best for complex reasoning and multimodal",
         "context_window": 200000,
         "speed": "moderate",
         "cost": "free",
+        "free": True,
+        "provider": "roo",
+        "capabilities": ["code", "chat", "vision"],
     },
 }
 
