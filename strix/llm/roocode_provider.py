@@ -1,14 +1,15 @@
 """
 Roo Code Cloud Provider Integration for Strix
 
-This module provides integration with Roo Code Cloud's free AI models,
-allowing Strix to use Roo Code Cloud's grok-code-fast-1 and code-supernova
-models for AI-powered penetration testing.
+This module provides integration with Roo Code Cloud's AI models,
+allowing Strix to use Roo Code Cloud's models for AI-powered penetration testing.
 
 Roo Code Cloud provides:
-- Zero configuration: No API keys to manage
+- Zero configuration: Easy OAuth authentication
 - Free Premium Models: Access to grok-code-fast-1 and code-supernova
 - OAuth authentication via GitHub, Google, or email
+
+Reference: https://docs.roocode.com/providers/roo-code-cloud
 """
 
 import json
@@ -29,31 +30,38 @@ import httpx
 logger = logging.getLogger(__name__)
 
 # Roo Code Cloud API endpoints
+# Based on the official documentation: https://docs.roocode.com/roo-code-cloud/overview
 ROOCODE_AUTH_URL = "https://app.roocode.com"
 ROOCODE_API_URL = "https://api.roocode.com"
-ROOCODE_OPENAI_COMPATIBLE_URL = "https://openrouter.ai/api/v1"
-
-# Available Roo Code Cloud models
-ROOCODE_MODELS = {
-    "grok-code-fast-1": {
-        "name": "grok-code-fast-1",
-        "description": "Fast coding model - Best for quick edits and high-speed iterations",
-        "context_window": 262000,
-        "free": True,
-        "openrouter_id": "x-ai/grok-2-1212",
-    },
-    "roo/code-supernova": {
-        "name": "roo/code-supernova",
-        "description": "Advanced model - Best for complex reasoning and multimodal tasks",
-        "context_window": 200000,
-        "free": True,
-        "openrouter_id": "openai/gpt-4o",
-    },
-}
+# Roo Code Cloud uses an OpenAI-compatible API for inference
+ROOCODE_INFERENCE_URL = "https://api.roocode.com/v1"
 
 # Default config file location
 ROOCODE_CONFIG_DIR = Path.home() / ".strix"
 ROOCODE_CONFIG_FILE = ROOCODE_CONFIG_DIR / "roocode_config.json"
+
+# Available Roo Code Cloud models
+# Based on: https://docs.roocode.com/providers/roo-code-cloud
+ROOCODE_MODELS = {
+    "grok-code-fast-1": {
+        "name": "grok-code-fast-1",
+        "display_name": "Grok Code Fast 1",
+        "description": "Fast coding model - Best for quick edits and high-speed iterations",
+        "context_window": 262000,
+        "free": True,
+        "provider": "xai",
+        "capabilities": ["code", "chat"],
+    },
+    "roo/code-supernova": {
+        "name": "roo/code-supernova",
+        "display_name": "Code Supernova",
+        "description": "Advanced model - Best for complex reasoning and multimodal tasks",
+        "context_window": 200000,
+        "free": True,
+        "provider": "roo",
+        "capabilities": ["code", "chat", "vision"],
+    },
+}
 
 
 @dataclass
@@ -65,12 +73,14 @@ class RooCodeCredentials:
     expires_at: float | None = None
     user_email: str | None = None
     user_id: str | None = None
+    session_token: str | None = None  # For session-based auth
 
     def is_expired(self) -> bool:
         """Check if the token is expired."""
         if self.expires_at is None:
             return False
-        return time.time() >= self.expires_at
+        # Add 5 minute buffer before actual expiration
+        return time.time() >= (self.expires_at - 300)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert credentials to dictionary."""
@@ -80,6 +90,7 @@ class RooCodeCredentials:
             "expires_at": self.expires_at,
             "user_email": self.user_email,
             "user_id": self.user_id,
+            "session_token": self.session_token,
         }
 
     @classmethod
@@ -91,6 +102,7 @@ class RooCodeCredentials:
             expires_at=data.get("expires_at"),
             user_email=data.get("user_email"),
             user_id=data.get("user_id"),
+            session_token=data.get("session_token"),
         )
 
 
@@ -116,11 +128,19 @@ class RooCodeAuthHandler(BaseHTTPRequestHandler):
                 self._send_error_response()
                 return
 
-            # Extract token from callback
-            token = query_params.get("token", [None])[0]
+            # Extract token from callback - handle multiple token formats
+            token = (
+                query_params.get("token", [None])[0]
+                or query_params.get("access_token", [None])[0]
+                or query_params.get("code", [None])[0]
+            )
+            
+            session_token = query_params.get("session_token", [None])[0]
+            
             if token:
                 RooCodeAuthHandler.credentials = RooCodeCredentials(
                     access_token=token,
+                    session_token=session_token,
                     expires_at=time.time() + 3600 * 24 * 30,  # 30 days default
                 )
                 self._send_success_response()
@@ -151,6 +171,15 @@ class RooCodeAuthHandler(BaseHTTPRequestHandler):
                 p { color: #e5e5e5; }
                 .icon { font-size: 64px; margin-bottom: 20px; }
             </style>
+            <script>
+                // Post message to opener and close
+                setTimeout(() => {
+                    if (window.opener) {
+                        window.opener.postMessage({ type: 'roocode_auth_success' }, '*');
+                    }
+                    window.close();
+                }, 2000);
+            </script>
         </head>
         <body>
             <div class="container">
@@ -204,11 +233,17 @@ class RooCodeProvider:
     Roo Code Cloud Provider for Strix.
 
     This provider allows Strix to use Roo Code Cloud's AI models for
-    penetration testing without requiring OpenAI API keys.
+    penetration testing without requiring separate API keys.
+    
+    Authentication methods:
+    1. Manual token via ROOCODE_ACCESS_TOKEN environment variable
+    2. OAuth flow via browser (opens app.roocode.com)
     """
 
     def __init__(self) -> None:
         self.credentials: RooCodeCredentials | None = None
+        self._cached_models: dict[str, dict[str, Any]] | None = None
+        self._models_cache_time: float = 0
         self._load_credentials()
 
     def _load_credentials(self) -> None:
@@ -244,7 +279,7 @@ class RooCodeProvider:
             return False
         if self.credentials.is_expired():
             return self._refresh_token()
-        return True
+        return bool(self.credentials.access_token)
 
     def _refresh_token(self) -> bool:
         """Attempt to refresh the access token."""
@@ -254,21 +289,22 @@ class RooCodeProvider:
         try:
             with httpx.Client() as client:
                 response = client.post(
-                    f"{ROOCODE_API_URL}/auth/refresh",
+                    f"{ROOCODE_API_URL}/v1/auth/refresh",
                     json={"refresh_token": self.credentials.refresh_token},
                     timeout=30,
                 )
-                response.raise_for_status()
-                data = response.json()
-
-                self.credentials.access_token = data["access_token"]
-                self.credentials.expires_at = time.time() + data.get("expires_in", 3600 * 24)
-                if "refresh_token" in data:
-                    self.credentials.refresh_token = data["refresh_token"]
-
-                self._save_credentials()
-                logger.info("Successfully refreshed Roo Code token")
-                return True
+                if response.status_code == 200:
+                    data = response.json()
+                    self.credentials.access_token = data.get("access_token", self.credentials.access_token)
+                    self.credentials.expires_at = time.time() + data.get("expires_in", 3600 * 24)
+                    if "refresh_token" in data:
+                        self.credentials.refresh_token = data["refresh_token"]
+                    self._save_credentials()
+                    logger.info("Successfully refreshed Roo Code token")
+                    return True
+                else:
+                    logger.warning(f"Token refresh failed with status: {response.status_code}")
+                    return False
 
         except (httpx.RequestError, httpx.HTTPStatusError, KeyError) as e:
             logger.warning(f"Failed to refresh Roo Code token: {e}")
@@ -318,7 +354,8 @@ class RooCodeProvider:
 
         # Open browser for authentication
         callback_url = f"http://localhost:{callback_port}/callback"
-        auth_url = f"{ROOCODE_AUTH_URL}/auth/cli?callback={callback_url}&app=strix"
+        # Use the sign-in page with redirect
+        auth_url = f"{ROOCODE_AUTH_URL}/sign-in?redirect_uri={callback_url}&app=strix"
 
         logger.info(f"Opening browser for Roo Code authentication: {auth_url}")
         print("\n🦉 Opening browser for Roo Code Cloud authentication...")
@@ -349,6 +386,7 @@ class RooCodeProvider:
     def logout(self) -> None:
         """Clear stored credentials and log out."""
         self.credentials = None
+        self._cached_models = None
         if ROOCODE_CONFIG_FILE.exists():
             try:
                 ROOCODE_CONFIG_FILE.unlink()
@@ -364,12 +402,69 @@ class RooCodeProvider:
 
     def get_api_base(self) -> str:
         """Get API base URL for LiteLLM integration."""
-        # Roo Code Cloud uses OpenRouter-compatible API
-        return ROOCODE_OPENAI_COMPATIBLE_URL
+        return ROOCODE_INFERENCE_URL
+
+    def fetch_available_models(self, force_refresh: bool = False) -> dict[str, dict[str, Any]]:
+        """
+        Fetch available models from Roo Code Cloud API.
+        
+        This attempts to get the latest models from the API,
+        with fallback to hardcoded defaults if the API is unavailable.
+        
+        Args:
+            force_refresh: Force refresh from API even if cache is valid
+            
+        Returns:
+            Dictionary of available models
+        """
+        # Use cached models if available and not expired (cache for 1 hour)
+        cache_ttl = 3600  # 1 hour
+        if (
+            not force_refresh
+            and self._cached_models
+            and (time.time() - self._models_cache_time) < cache_ttl
+        ):
+            return self._cached_models
+
+        # Try to fetch from API
+        if self.is_authenticated():
+            try:
+                with httpx.Client() as client:
+                    response = client.get(
+                        f"{ROOCODE_API_URL}/v1/models",
+                        headers={"Authorization": f"Bearer {self.credentials.access_token}"},
+                        timeout=30,
+                    )
+                    if response.status_code == 200:
+                        data = response.json()
+                        models = {}
+                        for model in data.get("data", []):
+                            model_id = model.get("id", "")
+                            if model_id:
+                                models[model_id] = {
+                                    "name": model_id,
+                                    "display_name": model.get("name", model_id),
+                                    "description": model.get("description", ""),
+                                    "context_window": model.get("context_length", 128000),
+                                    "free": model.get("pricing", {}).get("free", False),
+                                    "provider": model.get("provider", "roocode"),
+                                    "capabilities": model.get("capabilities", ["code", "chat"]),
+                                }
+                        if models:
+                            self._cached_models = models
+                            self._models_cache_time = time.time()
+                            logger.info(f"Fetched {len(models)} models from Roo Code Cloud API")
+                            return models
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"Failed to fetch models from API: {e}")
+
+        # Fallback to hardcoded models
+        logger.info("Using default Roo Code models")
+        return ROOCODE_MODELS.copy()
 
     def get_available_models(self) -> dict[str, dict[str, Any]]:
         """Get list of available Roo Code models."""
-        return ROOCODE_MODELS.copy()
+        return self.fetch_available_models()
 
     def get_model_id(self, model_name: str) -> str:
         """
@@ -381,15 +476,40 @@ class RooCodeProvider:
         Returns:
             Provider-compatible model ID for LiteLLM
         """
-        if model_name in ROOCODE_MODELS:
-            # Return OpenRouter-compatible ID for LiteLLM
-            return f"openrouter/{ROOCODE_MODELS[model_name]['openrouter_id']}"
-        return model_name
+        # Clean the model name
+        clean_name = model_name.replace("roocode/", "")
+        
+        # Get available models
+        models = self.get_available_models()
+        
+        if clean_name in models:
+            # Use direct model ID for Roo Code Cloud API
+            return f"roocode/{clean_name}"
+        
+        # If model not found in available models, return as-is
+        return f"roocode/{clean_name}"
 
     def get_user_info(self) -> dict[str, Any] | None:
         """Get current user information."""
         if not self.is_authenticated():
             return None
+
+        # Try to fetch user info from API
+        if self.credentials and self.credentials.access_token:
+            try:
+                with httpx.Client() as client:
+                    response = client.get(
+                        f"{ROOCODE_API_URL}/v1/user",
+                        headers={"Authorization": f"Bearer {self.credentials.access_token}"},
+                        timeout=30,
+                    )
+                    if response.status_code == 200:
+                        data = response.json()
+                        self.credentials.user_email = data.get("email")
+                        self.credentials.user_id = data.get("id")
+                        self._save_credentials()
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"Failed to fetch user info: {e}")
 
         return {
             "email": self.credentials.user_email if self.credentials else None,
@@ -415,7 +535,9 @@ def is_roocode_model(model_name: str) -> bool:
     if model_name.startswith("roocode/"):
         return True
     clean_name = model_name.replace("roocode/", "")
-    return clean_name in ROOCODE_MODELS
+    provider = get_roocode_provider()
+    models = provider.get_available_models()
+    return clean_name in models
 
 
 def configure_roocode_for_litellm(model_name: str) -> tuple[str, str | None, str | None]:

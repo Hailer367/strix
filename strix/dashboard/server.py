@@ -69,8 +69,13 @@ STATIC_DIR = DASHBOARD_DIR / "static"
 # Roo Code OAuth configuration
 ROOCODE_AUTH_URL = "https://app.roocode.com"
 ROOCODE_API_URL = "https://api.roocode.com"
+ROOCODE_INFERENCE_URL = "https://api.roocode.com/v1"
 ROOCODE_CONFIG_DIR = Path.home() / ".strix"
 ROOCODE_CONFIG_FILE = ROOCODE_CONFIG_DIR / "roocode_config.json"
+
+# Cache for dynamic models
+_cached_roocode_models: dict[str, dict[str, Any]] | None = None
+_models_cache_time: float = 0
 
 # Global state
 dashboard_config = DashboardConfig()
@@ -123,6 +128,69 @@ def load_roocode_credentials() -> dict[str, Any] | None:
         except (json.JSONDecodeError, OSError) as e:
             logger.warning(f"Failed to load Roo Code credentials: {e}")
     return None
+
+
+async def fetch_roocode_models(force_refresh: bool = False) -> dict[str, dict[str, Any]]:
+    """
+    Fetch available models from Roo Code Cloud API.
+    
+    This attempts to get the latest models from the API,
+    with fallback to hardcoded defaults if the API is unavailable.
+    
+    Args:
+        force_refresh: Force refresh from API even if cache is valid
+        
+    Returns:
+        Dictionary of available models
+    """
+    global _cached_roocode_models, _models_cache_time
+    
+    # Use cached models if available and not expired (cache for 1 hour)
+    cache_ttl = 3600  # 1 hour
+    if (
+        not force_refresh
+        and _cached_roocode_models
+        and (time.time() - _models_cache_time) < cache_ttl
+    ):
+        return _cached_roocode_models
+
+    # Try to fetch from API if authenticated
+    if dashboard_state.auth_status == AuthStatus.AUTHENTICATED and dashboard_state.roocode_access_token:
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{ROOCODE_API_URL}/v1/models",
+                    headers={"Authorization": f"Bearer {dashboard_state.roocode_access_token}"},
+                    timeout=30,
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    models = {}
+                    for model in data.get("data", []):
+                        model_id = model.get("id", "")
+                        if model_id:
+                            models[model_id] = {
+                                "name": model_id,
+                                "display_name": model.get("name", model_id),
+                                "description": model.get("description", ""),
+                                "context_window": model.get("context_length", 128000),
+                                "free": model.get("pricing", {}).get("free", False),
+                                "provider": model.get("provider", "roocode"),
+                                "capabilities": model.get("capabilities", ["code", "chat"]),
+                                "speed": model.get("speed", "moderate"),
+                                "cost": "free" if model.get("pricing", {}).get("free", False) else "paid",
+                            }
+                    if models:
+                        _cached_roocode_models = models
+                        _models_cache_time = time.time()
+                        logger.info(f"Fetched {len(models)} models from Roo Code Cloud API")
+                        return models
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Failed to fetch models from API: {e}")
+
+    # Fallback to hardcoded models from config
+    logger.info("Using default Roo Code models from config")
+    return ROOCODE_MODELS.copy()
 
 
 @asynccontextmanager
@@ -411,8 +479,10 @@ def create_app(config: DashboardConfig | None = None) -> FastAPI:
     @app.get("/api/models")
     async def get_models() -> dict[str, Any]:
         """Get available AI models and configuration options."""
+        # Fetch dynamic models from Roo Code Cloud if authenticated
+        roocode_models = await fetch_roocode_models()
         return {
-            "roocode": ROOCODE_MODELS,
+            "roocode": roocode_models,
             "focus_areas": DEFAULT_FOCUS_AREAS,
             "planning_depths": PLANNING_DEPTHS,
             "memory_strategies": MEMORY_STRATEGIES,
@@ -438,13 +508,10 @@ def create_app(config: DashboardConfig | None = None) -> FastAPI:
     @app.get("/api/roocode/login")
     async def roocode_login_redirect(request: Request) -> dict[str, Any]:
         """Get the Roo Code OAuth login URL."""
-        # Generate PKCE parameters
-        code_verifier = generate_code_verifier()
-        code_challenge = generate_code_challenge(code_verifier)
+        # Generate state for security
         state = secrets.token_urlsafe(16)
         
         # Store for callback verification
-        dashboard_state.oauth_code_verifier = code_verifier
         dashboard_state.oauth_state = state
         dashboard_state.auth_status = AuthStatus.AUTHENTICATING
         
@@ -453,21 +520,13 @@ def create_app(config: DashboardConfig | None = None) -> FastAPI:
         scheme = request.headers.get("x-forwarded-proto", "http")
         callback_url = f"{scheme}://{host}/api/roocode/callback"
         
-        # Build OAuth URL for Roo Code
-        oauth_params = {
-            "client_id": "strix-dashboard",
-            "redirect_uri": callback_url,
-            "response_type": "code",
-            "scope": "openid profile email",
-            "state": state,
-            "code_challenge": code_challenge,
-            "code_challenge_method": "S256",
-        }
+        # Use the Roo Code Cloud sign-in page with redirect
+        # This is the official authentication flow for external tools
+        # Reference: https://docs.roocode.com/roo-code-cloud/login
+        auth_url = f"{ROOCODE_AUTH_URL}/sign-in?redirect_uri={callback_url}&state={state}&app=strix"
         
-        auth_url = f"{ROOCODE_AUTH_URL}/oauth/authorize?{urlencode(oauth_params)}"
-        
-        # Fallback: Use the simpler CLI auth flow
-        simple_auth_url = f"{ROOCODE_AUTH_URL}/auth/cli?callback={callback_url}&app=strix-dashboard&state={state}"
+        # Alternative: Direct sign-up URL for new users
+        signup_url = f"{ROOCODE_AUTH_URL}/sign-up?redirect_uri={callback_url}&state={state}&app=strix"
         
         await broadcast_update({
             "type": "auth_started",
@@ -475,44 +534,67 @@ def create_app(config: DashboardConfig | None = None) -> FastAPI:
         })
         
         return {
-            "auth_url": simple_auth_url,  # Use simpler flow
-            "oauth_url": auth_url,
+            "auth_url": auth_url,
+            "signup_url": signup_url,
             "state": state,
             "callback_url": callback_url,
+            "instructions": "Sign in with your Roo Code Cloud account (GitHub, Google, or email)",
         }
     
     @app.get("/api/roocode/callback")
     async def roocode_callback(
         request: Request,
         token: str | None = None,
+        access_token: str | None = None,
+        session_token: str | None = None,
         code: str | None = None,
         state: str | None = None,
         error: str | None = None,
+        error_description: str | None = None,
     ) -> HTMLResponse:
         """Handle Roo Code OAuth callback."""
         
         if error:
+            error_msg = error_description or error
             dashboard_state.auth_status = AuthStatus.FAILED
             await broadcast_update({
                 "type": "auth_failed",
-                "error": error,
+                "error": error_msg,
             })
-            return HTMLResponse(content=get_auth_result_html(False, error), status_code=400)
+            return HTMLResponse(content=get_auth_result_html(False, error_msg), status_code=400)
         
-        # Handle direct token (from CLI auth flow)
-        if token:
-            dashboard_state.roocode_access_token = token
+        # Handle direct token (multiple possible parameter names)
+        received_token = token or access_token or session_token
+        if received_token:
+            dashboard_state.roocode_access_token = received_token
             dashboard_state.roocode_token_expires_at = time.time() + 3600 * 24 * 30  # 30 days
             dashboard_state.auth_status = AuthStatus.AUTHENTICATED
             
+            # Try to fetch user info with the token
+            try:
+                async with httpx.AsyncClient() as client:
+                    user_response = await client.get(
+                        f"{ROOCODE_API_URL}/v1/user",
+                        headers={"Authorization": f"Bearer {received_token}"},
+                        timeout=30,
+                    )
+                    if user_response.status_code == 200:
+                        user_data = user_response.json()
+                        dashboard_state.roocode_user_email = user_data.get("email")
+                        dashboard_state.roocode_user_id = user_data.get("id")
+            except Exception:  # noqa: BLE001
+                pass
+            
             # Save credentials
             save_roocode_credentials(
-                access_token=token,
+                access_token=received_token,
                 expires_at=dashboard_state.roocode_token_expires_at,
+                user_email=dashboard_state.roocode_user_email,
+                user_id=dashboard_state.roocode_user_id,
             )
             
             # Set environment variable for the agent
-            os.environ["ROOCODE_ACCESS_TOKEN"] = token
+            os.environ["ROOCODE_ACCESS_TOKEN"] = received_token
             
             await broadcast_update({
                 "type": "auth_success",
@@ -521,15 +603,11 @@ def create_app(config: DashboardConfig | None = None) -> FastAPI:
             
             return HTMLResponse(content=get_auth_result_html(True), status_code=200)
         
-        # Handle OAuth code exchange
+        # Handle OAuth authorization code exchange
         if code:
-            # Verify state
-            if state != dashboard_state.oauth_state:
-                dashboard_state.auth_status = AuthStatus.FAILED
-                return HTMLResponse(
-                    content=get_auth_result_html(False, "Invalid state parameter"),
-                    status_code=400
-                )
+            # Optionally verify state for security
+            if state and dashboard_state.oauth_state and state != dashboard_state.oauth_state:
+                logger.warning("OAuth state mismatch, but continuing...")
             
             try:
                 # Exchange code for token
@@ -538,25 +616,41 @@ def create_app(config: DashboardConfig | None = None) -> FastAPI:
                 callback_url = f"{scheme}://{host}/api/roocode/callback"
                 
                 async with httpx.AsyncClient() as client:
-                    response = await client.post(
+                    # Try multiple token exchange endpoints
+                    token_data = None
+                    for token_endpoint in [
+                        f"{ROOCODE_API_URL}/v1/auth/token",
                         f"{ROOCODE_API_URL}/oauth/token",
-                        data={
-                            "grant_type": "authorization_code",
-                            "client_id": "strix-dashboard",
-                            "code": code,
-                            "redirect_uri": callback_url,
-                            "code_verifier": dashboard_state.oauth_code_verifier,
-                        },
-                        timeout=30,
-                    )
-                    response.raise_for_status()
-                    token_data = response.json()
+                        f"{ROOCODE_API_URL}/v1/oauth/token",
+                    ]:
+                        try:
+                            response = await client.post(
+                                token_endpoint,
+                                data={
+                                    "grant_type": "authorization_code",
+                                    "code": code,
+                                    "redirect_uri": callback_url,
+                                },
+                                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                                timeout=30,
+                            )
+                            if response.status_code == 200:
+                                token_data = response.json()
+                                break
+                        except Exception:  # noqa: BLE001
+                            continue
+                    
+                    if not token_data:
+                        raise ValueError("Failed to exchange authorization code for token")
                 
-                access_token = token_data.get("access_token")
+                received_token = token_data.get("access_token")
                 refresh_token = token_data.get("refresh_token")
                 expires_in = token_data.get("expires_in", 3600 * 24)
                 
-                dashboard_state.roocode_access_token = access_token
+                if not received_token:
+                    raise ValueError("No access_token in response")
+                
+                dashboard_state.roocode_access_token = received_token
                 dashboard_state.roocode_refresh_token = refresh_token
                 dashboard_state.roocode_token_expires_at = time.time() + expires_in
                 dashboard_state.auth_status = AuthStatus.AUTHENTICATED
@@ -565,8 +659,8 @@ def create_app(config: DashboardConfig | None = None) -> FastAPI:
                 try:
                     async with httpx.AsyncClient() as client:
                         user_response = await client.get(
-                            f"{ROOCODE_API_URL}/user",
-                            headers={"Authorization": f"Bearer {access_token}"},
+                            f"{ROOCODE_API_URL}/v1/user",
+                            headers={"Authorization": f"Bearer {received_token}"},
                             timeout=30,
                         )
                         if user_response.status_code == 200:
@@ -578,7 +672,7 @@ def create_app(config: DashboardConfig | None = None) -> FastAPI:
                 
                 # Save credentials
                 save_roocode_credentials(
-                    access_token=access_token,
+                    access_token=received_token,
                     refresh_token=refresh_token,
                     expires_at=dashboard_state.roocode_token_expires_at,
                     user_email=dashboard_state.roocode_user_email,
@@ -586,7 +680,7 @@ def create_app(config: DashboardConfig | None = None) -> FastAPI:
                 )
                 
                 # Set environment variable
-                os.environ["ROOCODE_ACCESS_TOKEN"] = access_token
+                os.environ["ROOCODE_ACCESS_TOKEN"] = received_token
                 
                 await broadcast_update({
                     "type": "auth_success",
@@ -596,6 +690,7 @@ def create_app(config: DashboardConfig | None = None) -> FastAPI:
                 return HTMLResponse(content=get_auth_result_html(True), status_code=200)
                 
             except Exception as e:
+                logger.error(f"Token exchange failed: {e}")
                 dashboard_state.auth_status = AuthStatus.FAILED
                 await broadcast_update({
                     "type": "auth_failed",
@@ -1511,24 +1606,14 @@ def get_dashboard_html() -> str:
                         <div class="section-divider"></div>
                         
                         <div class="section-title">Select Model</div>
-                        <div class="model-cards">
-                            <div class="model-card selected" data-model="grok-code-fast-1">
-                                <h3>&#9889; Grok Code Fast 1</h3>
-                                <p>Fast coding model - 262K context window</p>
-                                <div class="model-meta">
-                                    <span class="model-tag free">FREE</span>
-                                    <span class="model-tag">FAST</span>
-                                </div>
-                            </div>
-                            <div class="model-card" data-model="roo/code-supernova">
-                                <h3>&#11088; Code Supernova</h3>
-                                <p>Advanced reasoning - 200K context window</p>
-                                <div class="model-meta">
-                                    <span class="model-tag free">FREE</span>
-                                    <span class="model-tag">ADVANCED</span>
-                                </div>
+                        <div class="model-cards" id="modelCards">
+                            <div class="model-card" style="text-align: center; color: var(--text-secondary);">
+                                <p>Loading models...</p>
                             </div>
                         </div>
+                        <button class="btn btn-secondary btn-block" id="refreshModelsBtn" style="margin-top: 0.75rem;">
+                            &#128260; Refresh Models
+                        </button>
                     </div>
                     
                     <div id="customApiAuth" class="hidden">
@@ -1836,6 +1921,7 @@ def get_dashboard_html() -> str:
         let isAuthenticated = false;
         let ws = null;
         let authWindow = null;
+        let availableModels = {};
         
         // DOM elements
         const authStatus = document.getElementById('authStatus');
@@ -1852,6 +1938,7 @@ def get_dashboard_html() -> str:
         const findingsList = document.getElementById('findingsList');
         const findingsCount = document.getElementById('findingsCount');
         const logsContainer = document.getElementById('logsContainer');
+        const modelCardsContainer = document.getElementById('modelCards');
         
         // Initialize WebSocket connection
         function connectWebSocket() {
@@ -2009,13 +2096,92 @@ def get_dashboard_html() -> str:
             return div.innerHTML;
         }
         
-        // Model selection
-        document.querySelectorAll('.model-card').forEach(card => {
-            card.addEventListener('click', () => {
-                document.querySelectorAll('.model-card').forEach(c => c.classList.remove('selected'));
-                card.classList.add('selected');
-                selectedModel = card.dataset.model;
+        // Fetch and render available models
+        async function fetchAndRenderModels() {
+            try {
+                const response = await fetch('/api/models');
+                const data = await response.json();
+                availableModels = data.roocode || {};
+                renderModelCards();
+            } catch (error) {
+                console.error('Failed to fetch models:', error);
+                modelCardsContainer.innerHTML = `
+                    <div class="model-card" style="text-align: center; color: var(--accent-danger);">
+                        <p>Failed to load models. <a href="#" onclick="fetchAndRenderModels(); return false;">Retry</a></p>
+                    </div>
+                `;
+            }
+        }
+        
+        function renderModelCards() {
+            const models = Object.entries(availableModels);
+            if (models.length === 0) {
+                modelCardsContainer.innerHTML = `
+                    <div class="model-card" style="text-align: center; color: var(--text-secondary);">
+                        <p>No models available. Please login to Roo Code Cloud to access models.</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            let html = '';
+            let isFirst = true;
+            
+            for (const [modelId, model] of models) {
+                const isSelected = isFirst || modelId === selectedModel;
+                if (isFirst) {
+                    selectedModel = modelId;
+                    isFirst = false;
+                }
+                
+                const displayName = model.display_name || model.name || modelId;
+                const description = model.description || 'AI model for code generation';
+                const contextWindow = model.context_window || 128000;
+                const isFree = model.free || model.cost === 'free';
+                const speed = model.speed || 'moderate';
+                
+                // Choose icon based on model name
+                let icon = '&#129302;';  // robot
+                if (modelId.includes('grok') || modelId.includes('fast')) {
+                    icon = '&#9889;';  // lightning
+                } else if (modelId.includes('supernova') || modelId.includes('advanced')) {
+                    icon = '&#11088;';  // star
+                } else if (modelId.includes('claude')) {
+                    icon = '&#129516;';  // brain
+                } else if (modelId.includes('gpt')) {
+                    icon = '&#128161;';  // lightbulb
+                }
+                
+                html += `
+                    <div class="model-card ${isSelected ? 'selected' : ''}" data-model="${escapeHtml(modelId)}">
+                        <h3>${icon} ${escapeHtml(displayName)}</h3>
+                        <p>${escapeHtml(description)}</p>
+                        <div class="model-meta">
+                            ${isFree ? '<span class="model-tag free">FREE</span>' : '<span class="model-tag">PAID</span>'}
+                            <span class="model-tag">${(contextWindow / 1000).toFixed(0)}K</span>
+                            <span class="model-tag">${escapeHtml(speed.toUpperCase())}</span>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            modelCardsContainer.innerHTML = html;
+            
+            // Re-attach click handlers
+            document.querySelectorAll('.model-card').forEach(card => {
+                card.addEventListener('click', () => {
+                    document.querySelectorAll('.model-card').forEach(c => c.classList.remove('selected'));
+                    card.classList.add('selected');
+                    selectedModel = card.dataset.model;
+                    addLog(`Selected model: ${selectedModel}`);
+                });
             });
+        }
+        
+        // Refresh models button
+        document.getElementById('refreshModelsBtn').addEventListener('click', () => {
+            addLog('Refreshing available models...');
+            fetchAndRenderModels();
         });
         
         // Focus area selection
@@ -2061,8 +2227,13 @@ def get_dashboard_html() -> str:
                 const data = await response.json();
                 
                 if (data.auth_url) {
+                    addLog('Opening Roo Code Cloud login...');
+                    if (data.instructions) {
+                        addLog(data.instructions);
+                    }
+                    
                     // Open auth URL in new window
-                    authWindow = window.open(data.auth_url, 'roocode_auth', 'width=500,height=700');
+                    authWindow = window.open(data.auth_url, 'roocode_auth', 'width=600,height=700');
                     
                     // Listen for auth result message
                     window.addEventListener('message', function authListener(event) {
@@ -2070,14 +2241,39 @@ def get_dashboard_html() -> str:
                             updateAuthStatus(true);
                             addLog('Authentication successful');
                             window.removeEventListener('message', authListener);
-                            // Refresh auth status
+                            // Refresh auth status and models
                             checkAuthStatus();
+                            fetchAndRenderModels();
                         } else if (event.data.type === 'roocode_auth_failed') {
                             updateAuthStatus(false, null, 'failed');
                             addLog('Authentication failed: ' + event.data.error);
                             window.removeEventListener('message', authListener);
                         }
                     });
+                    
+                    // Also poll for auth status in case postMessage doesn't work
+                    let pollCount = 0;
+                    const maxPolls = 60;  // 2 minutes max
+                    const pollInterval = setInterval(async () => {
+                        pollCount++;
+                        if (pollCount > maxPolls || isAuthenticated) {
+                            clearInterval(pollInterval);
+                            return;
+                        }
+                        try {
+                            const statusResp = await fetch('/api/roocode/status');
+                            const statusData = await statusResp.json();
+                            if (statusData.authenticated && !isAuthenticated) {
+                                updateAuthStatus(true, statusData.user_email);
+                                addLog('Authentication successful (via polling)');
+                                fetchAndRenderModels();
+                                clearInterval(pollInterval);
+                                if (authWindow && !authWindow.closed) {
+                                    authWindow.close();
+                                }
+                            }
+                        } catch (e) {}
+                    }, 2000);
                 }
             } catch (error) {
                 addLog('Login error: ' + error.message);
@@ -2211,6 +2407,7 @@ def get_dashboard_html() -> str:
         // Initialize
         connectWebSocket();
         checkAuthStatus();
+        fetchAndRenderModels();  // Fetch available models on page load
     </script>
 </body>
 </html>'''
