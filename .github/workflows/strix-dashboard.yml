@@ -47,11 +47,12 @@ jobs:
         with:
           python-version: '3.12'
       
-      - name: Install System Dependencies
+      - name: Verify Docker Installation
         run: |
-          sudo apt-get update
-          sudo apt-get install -y docker.io
-          sudo systemctl start docker
+          # Docker is pre-installed on GitHub runners, just verify it's working
+          docker --version
+          docker info || sudo systemctl start docker
+          # Add current user to docker group (may require newgrp for current session)
           sudo usermod -aG docker $USER
       
       - name: Install Strix
@@ -61,20 +62,25 @@ jobs:
           poetry install
       
       - name: Configure Environment
+        env:
+          ROOCODE_TOKEN: ${{ secrets.ROOCODE_ACCESS_TOKEN }}
+          PERPLEXITY_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
         run: |
           echo "STRIX_ROOT_ACCESS=${{ inputs.enable_root_access }}" >> $GITHUB_ENV
           echo "STRIX_ACCESS_LEVEL=${{ inputs.enable_root_access && 'root' || 'standard' }}" >> $GITHUB_ENV
           echo "STRIX_DEBUG=${{ inputs.debug_mode }}" >> $GITHUB_ENV
           echo "STRIX_DURATION_HOURS=${{ inputs.duration_hours }}" >> $GITHUB_ENV
           
-          # Set up Roo Code token if available
-          if [ -n "${{ secrets.ROOCODE_ACCESS_TOKEN }}" ]; then
-            echo "ROOCODE_ACCESS_TOKEN=${{ secrets.ROOCODE_ACCESS_TOKEN }}" >> $GITHUB_ENV
+          # Set up Roo Code token if available (check actual env var, not the secret directly)
+          if [ -n "$ROOCODE_TOKEN" ] && [ "$ROOCODE_TOKEN" != "" ]; then
+            echo "ROOCODE_ACCESS_TOKEN=$ROOCODE_TOKEN" >> $GITHUB_ENV
+            echo "Roo Code token configured"
           fi
           
           # Set up Perplexity API key if available
-          if [ -n "${{ secrets.PERPLEXITY_API_KEY }}" ]; then
-            echo "PERPLEXITY_API_KEY=${{ secrets.PERPLEXITY_API_KEY }}" >> $GITHUB_ENV
+          if [ -n "$PERPLEXITY_KEY" ] && [ "$PERPLEXITY_KEY" != "" ]; then
+            echo "PERPLEXITY_API_KEY=$PERPLEXITY_KEY" >> $GITHUB_ENV
+            echo "Perplexity API key configured"
           fi
       
       - name: Calculate Timeout Minutes
@@ -88,42 +94,68 @@ jobs:
       - name: Start Dashboard Server
         id: dashboard
         run: |
+          # Create a PID file location
+          PIDFILE="/tmp/strix_dashboard.pid"
+          
           # Start the dashboard server in background
-          poetry run python -m strix.dashboard.server --port $STRIX_DASHBOARD_PORT &
+          nohup poetry run python -m strix.dashboard.server --port $STRIX_DASHBOARD_PORT > /tmp/dashboard.log 2>&1 &
           DASHBOARD_PID=$!
+          echo $DASHBOARD_PID > "$PIDFILE"
           echo "dashboard_pid=$DASHBOARD_PID" >> $GITHUB_OUTPUT
+          echo "Dashboard started with PID: $DASHBOARD_PID"
           
           # Wait for server to be ready
           echo "Waiting for dashboard server to start..."
+          SERVER_READY=false
           for i in {1..30}; do
             if curl -s http://localhost:$STRIX_DASHBOARD_PORT/api/status > /dev/null 2>&1; then
               echo "Dashboard server is ready!"
+              SERVER_READY=true
               break
             fi
+            echo "Attempt $i/30 - waiting..."
             sleep 2
           done
+          
+          if [ "$SERVER_READY" = false ]; then
+            echo "Warning: Dashboard server may not be fully ready. Checking logs:"
+            cat /tmp/dashboard.log || true
+          fi
       
       - name: Setup Cloudflare Tunnel
         id: tunnel
         run: |
+          # Create a PID file location
+          TUNNEL_PIDFILE="/tmp/cloudflared.pid"
+          
           # Install cloudflared
-          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+          curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
           
           # Start tunnel and capture URL
-          ./cloudflared tunnel --url http://localhost:$STRIX_DASHBOARD_PORT --no-autoupdate > tunnel.log 2>&1 &
+          nohup ./cloudflared tunnel --url http://localhost:$STRIX_DASHBOARD_PORT --no-autoupdate > /tmp/tunnel.log 2>&1 &
           TUNNEL_PID=$!
+          echo $TUNNEL_PID > "$TUNNEL_PIDFILE"
           echo "tunnel_pid=$TUNNEL_PID" >> $GITHUB_OUTPUT
+          echo "Cloudflare tunnel started with PID: $TUNNEL_PID"
           
-          # Wait for tunnel URL
+          # Wait for tunnel URL with retry logic
           echo "Starting Cloudflare tunnel..."
-          sleep 10
-          
-          TUNNEL_URL=$(grep -oP 'https://[a-z0-9-]+\.trycloudflare\.com' tunnel.log | head -1)
+          TUNNEL_URL=""
+          for i in {1..12}; do
+            sleep 5
+            # Try multiple grep patterns for URL extraction
+            TUNNEL_URL=$(grep -Eo 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/tunnel.log 2>/dev/null | head -1) || true
+            if [ -n "$TUNNEL_URL" ]; then
+              echo "Tunnel URL found: $TUNNEL_URL"
+              break
+            fi
+            echo "Attempt $i/12 - waiting for tunnel URL..."
+          done
           
           if [ -z "$TUNNEL_URL" ]; then
-            echo "Failed to get tunnel URL. Checking logs..."
-            cat tunnel.log
+            echo "Failed to get tunnel URL after 60 seconds. Checking logs..."
+            cat /tmp/tunnel.log
             exit 1
           fi
           
@@ -192,18 +224,23 @@ jobs:
               # Calculate duration in minutes
               DURATION_MINUTES=$((${STRIX_DURATION_HOURS:-2} * 60))
               
+              # Build the command with optional root access flag
+              STRIX_CMD="poetry run strix -n --target \"$TARGET\" --run-name \"github-action-$(date +%Y%m%d-%H%M%S)\""
+              if [ "${{ inputs.enable_root_access }}" = "true" ]; then
+                STRIX_CMD="$STRIX_CMD --root-access"
+              fi
+              
               # Run the scan with timeout
-              timeout "${SCAN_TIMEOUT_MINUTES}m" poetry run strix -n \
-                --target "$TARGET" \
-                --run-name "github-action-$(date +%Y%m%d-%H%M%S)" \
-                ${{ inputs.enable_root_access && '--root-access' || '' }} || {
-                  EXIT_CODE=$?
-                  if [ $EXIT_CODE -eq 124 ]; then
-                    echo "Scan completed (reached time limit)"
-                  else
-                    exit $EXIT_CODE
-                  fi
-                }
+              timeout "${SCAN_TIMEOUT_MINUTES}m" bash -c "$STRIX_CMD" || {
+                EXIT_CODE=$?
+                if [ $EXIT_CODE -eq 124 ]; then
+                  echo "Scan completed (reached time limit)"
+                  exit 0
+                else
+                  echo "Scan exited with code: $EXIT_CODE"
+                  exit $EXIT_CODE
+                fi
+              }
             else
               echo "No valid target found in configuration"
               exit 1
@@ -221,14 +258,35 @@ jobs:
           name: strix-scan-results
           path: strix_runs/
           retention-days: 30
+          if-no-files-found: warn
       
       - name: Cleanup
         if: always()
         run: |
-          # Kill background processes
-          if [ -n "${{ steps.dashboard.outputs.dashboard_pid }}" ]; then
-            kill ${{ steps.dashboard.outputs.dashboard_pid }} || true
+          echo "Cleaning up background processes..."
+          
+          # Kill dashboard server using PID file
+          if [ -f "/tmp/strix_dashboard.pid" ]; then
+            DASHBOARD_PID=$(cat /tmp/strix_dashboard.pid)
+            if kill -0 "$DASHBOARD_PID" 2>/dev/null; then
+              echo "Stopping dashboard server (PID: $DASHBOARD_PID)"
+              kill "$DASHBOARD_PID" || true
+            fi
+            rm -f /tmp/strix_dashboard.pid
           fi
-          if [ -n "${{ steps.tunnel.outputs.tunnel_pid }}" ]; then
-            kill ${{ steps.tunnel.outputs.tunnel_pid }} || true
+          
+          # Kill cloudflared tunnel using PID file
+          if [ -f "/tmp/cloudflared.pid" ]; then
+            TUNNEL_PID=$(cat /tmp/cloudflared.pid)
+            if kill -0 "$TUNNEL_PID" 2>/dev/null; then
+              echo "Stopping cloudflare tunnel (PID: $TUNNEL_PID)"
+              kill "$TUNNEL_PID" || true
+            fi
+            rm -f /tmp/cloudflared.pid
           fi
+          
+          # Fallback: kill any remaining processes by name
+          pkill -f "strix.dashboard.server" || true
+          pkill -f "cloudflared" || true
+          
+          echo "Cleanup completed"
