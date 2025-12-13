@@ -7,7 +7,16 @@ on:
         description: 'Maximum scan duration (hours)'
         required: false
         default: '2'
-        type: string
+        type: choice
+        options:
+          - '1'
+          - '2'
+          - '3'
+          - '4'
+          - '5'
+          - '6'
+          - '7'
+          - '8'
       enable_root_access:
         description: 'Enable root access for agent'
         required: false
@@ -67,6 +76,14 @@ jobs:
           if [ -n "${{ secrets.PERPLEXITY_API_KEY }}" ]; then
             echo "PERPLEXITY_API_KEY=${{ secrets.PERPLEXITY_API_KEY }}" >> $GITHUB_ENV
           fi
+      
+      - name: Calculate Timeout Minutes
+        id: timeout
+        run: |
+          DURATION_HOURS="${{ inputs.duration_hours }}"
+          TIMEOUT_MINUTES=$((DURATION_HOURS * 60))
+          echo "timeout_minutes=$TIMEOUT_MINUTES" >> $GITHUB_OUTPUT
+          echo "Scan timeout set to $TIMEOUT_MINUTES minutes ($DURATION_HOURS hours)"
       
       - name: Start Dashboard Server
         id: dashboard
@@ -154,6 +171,8 @@ jobs:
           echo "Configuration received! Starting autonomous scan..."
       
       - name: Run Autonomous Scan
+        env:
+          SCAN_TIMEOUT_MINUTES: ${{ steps.timeout.outputs.timeout_minutes }}
         run: |
           # Load configuration
           CONFIG_FILE="/tmp/strix_scan_config.json"
@@ -173,11 +192,18 @@ jobs:
               # Calculate duration in minutes
               DURATION_MINUTES=$((${STRIX_DURATION_HOURS:-2} * 60))
               
-              # Run the scan
-              poetry run strix -n \
+              # Run the scan with timeout
+              timeout "${SCAN_TIMEOUT_MINUTES}m" poetry run strix -n \
                 --target "$TARGET" \
                 --run-name "github-action-$(date +%Y%m%d-%H%M%S)" \
-                ${{ inputs.enable_root_access && '--root-access' || '' }}
+                ${{ inputs.enable_root_access && '--root-access' || '' }} || {
+                  EXIT_CODE=$?
+                  if [ $EXIT_CODE -eq 124 ]; then
+                    echo "Scan completed (reached time limit)"
+                  else
+                    exit $EXIT_CODE
+                  fi
+                }
             else
               echo "No valid target found in configuration"
               exit 1
@@ -186,7 +212,7 @@ jobs:
             echo "Configuration file not found"
             exit 1
           fi
-        timeout-minutes: ${{ fromJSON(inputs.duration_hours) * 60 }}
+        timeout-minutes: 480
       
       - name: Upload Scan Results
         if: always()
