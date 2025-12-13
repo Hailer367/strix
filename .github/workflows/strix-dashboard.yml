@@ -1,0 +1,208 @@
+name: Strix Autonomous Dashboard
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration_hours:
+        description: 'Maximum scan duration (hours)'
+        required: false
+        default: '2'
+        type: string
+      enable_root_access:
+        description: 'Enable root access for agent'
+        required: false
+        default: true
+        type: boolean
+      debug_mode:
+        description: 'Enable debug logging'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  STRIX_DASHBOARD_PORT: 8080
+  STRIX_USE_ROOCODE: "true"
+
+jobs:
+  dashboard:
+    name: Start Dashboard & Run Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 480  # 8 hours max
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y docker.io
+          sudo systemctl start docker
+          sudo usermod -aG docker $USER
+      
+      - name: Install Strix
+        run: |
+          pip install --upgrade pip
+          pip install poetry
+          poetry install
+      
+      - name: Configure Environment
+        run: |
+          echo "STRIX_ROOT_ACCESS=${{ inputs.enable_root_access }}" >> $GITHUB_ENV
+          echo "STRIX_ACCESS_LEVEL=${{ inputs.enable_root_access && 'root' || 'standard' }}" >> $GITHUB_ENV
+          echo "STRIX_DEBUG=${{ inputs.debug_mode }}" >> $GITHUB_ENV
+          echo "STRIX_DURATION_HOURS=${{ inputs.duration_hours }}" >> $GITHUB_ENV
+          
+          # Set up Roo Code token if available
+          if [ -n "${{ secrets.ROOCODE_ACCESS_TOKEN }}" ]; then
+            echo "ROOCODE_ACCESS_TOKEN=${{ secrets.ROOCODE_ACCESS_TOKEN }}" >> $GITHUB_ENV
+          fi
+          
+          # Set up Perplexity API key if available
+          if [ -n "${{ secrets.PERPLEXITY_API_KEY }}" ]; then
+            echo "PERPLEXITY_API_KEY=${{ secrets.PERPLEXITY_API_KEY }}" >> $GITHUB_ENV
+          fi
+      
+      - name: Start Dashboard Server
+        id: dashboard
+        run: |
+          # Start the dashboard server in background
+          poetry run python -m strix.dashboard.server --port $STRIX_DASHBOARD_PORT &
+          DASHBOARD_PID=$!
+          echo "dashboard_pid=$DASHBOARD_PID" >> $GITHUB_OUTPUT
+          
+          # Wait for server to be ready
+          echo "Waiting for dashboard server to start..."
+          for i in {1..30}; do
+            if curl -s http://localhost:$STRIX_DASHBOARD_PORT/api/status > /dev/null 2>&1; then
+              echo "Dashboard server is ready!"
+              break
+            fi
+            sleep 2
+          done
+      
+      - name: Setup Cloudflare Tunnel
+        id: tunnel
+        run: |
+          # Install cloudflared
+          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+          chmod +x cloudflared
+          
+          # Start tunnel and capture URL
+          ./cloudflared tunnel --url http://localhost:$STRIX_DASHBOARD_PORT --no-autoupdate > tunnel.log 2>&1 &
+          TUNNEL_PID=$!
+          echo "tunnel_pid=$TUNNEL_PID" >> $GITHUB_OUTPUT
+          
+          # Wait for tunnel URL
+          echo "Starting Cloudflare tunnel..."
+          sleep 10
+          
+          TUNNEL_URL=$(grep -oP 'https://[a-z0-9-]+\.trycloudflare\.com' tunnel.log | head -1)
+          
+          if [ -z "$TUNNEL_URL" ]; then
+            echo "Failed to get tunnel URL. Checking logs..."
+            cat tunnel.log
+            exit 1
+          fi
+          
+          echo "tunnel_url=$TUNNEL_URL" >> $GITHUB_OUTPUT
+          echo "::notice title=Dashboard URL::$TUNNEL_URL"
+      
+      - name: Display Dashboard URL
+        run: |
+          echo "=============================================="
+          echo "  🦉 STRIX AUTONOMOUS DASHBOARD"
+          echo "=============================================="
+          echo ""
+          echo "  📍 Dashboard URL:"
+          echo "  ${{ steps.tunnel.outputs.tunnel_url }}"
+          echo ""
+          echo "=============================================="
+          echo ""
+          echo "  Instructions:"
+          echo "  1. Open the URL above in your browser"
+          echo "  2. Login with your Roo Code account"
+          echo "  3. Configure your target and settings"
+          echo "  4. Click 'Configure and Fire' to start"
+          echo ""
+          echo "  The scan will run for up to ${{ inputs.duration_hours }} hours"
+          echo "=============================================="
+      
+      - name: Wait for Configuration
+        run: |
+          echo "Waiting for user to configure and start scan..."
+          CONFIG_READY_FILE="/tmp/strix_config_ready"
+          MAX_WAIT=$((60 * 30))  # 30 minutes max wait for configuration
+          WAITED=0
+          
+          while [ ! -f "$CONFIG_READY_FILE" ] && [ $WAITED -lt $MAX_WAIT ]; do
+            sleep 10
+            WAITED=$((WAITED + 10))
+            echo "Waiting for configuration... ($WAITED seconds)"
+          done
+          
+          if [ ! -f "$CONFIG_READY_FILE" ]; then
+            echo "Configuration timeout. Please restart the workflow."
+            exit 1
+          fi
+          
+          echo "Configuration received! Starting autonomous scan..."
+      
+      - name: Run Autonomous Scan
+        run: |
+          # Load configuration
+          CONFIG_FILE="/tmp/strix_scan_config.json"
+          
+          if [ -f "$CONFIG_FILE" ]; then
+            # Extract target from config
+            TARGET=$(jq -r '.targets.primary' "$CONFIG_FILE")
+            
+            if [ -n "$TARGET" ] && [ "$TARGET" != "null" ]; then
+              echo "Starting scan for target: $TARGET"
+              
+              # Load environment from config
+              if [ -f "/tmp/strix_scan_config.env" ]; then
+                source /tmp/strix_scan_config.env
+              fi
+              
+              # Calculate duration in minutes
+              DURATION_MINUTES=$((${STRIX_DURATION_HOURS:-2} * 60))
+              
+              # Run the scan
+              poetry run strix -n \
+                --target "$TARGET" \
+                --run-name "github-action-$(date +%Y%m%d-%H%M%S)" \
+                ${{ inputs.enable_root_access && '--root-access' || '' }}
+            else
+              echo "No valid target found in configuration"
+              exit 1
+            fi
+          else
+            echo "Configuration file not found"
+            exit 1
+          fi
+        timeout-minutes: ${{ fromJSON(inputs.duration_hours) * 60 }}
+      
+      - name: Upload Scan Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strix-scan-results
+          path: strix_runs/
+          retention-days: 30
+      
+      - name: Cleanup
+        if: always()
+        run: |
+          # Kill background processes
+          if [ -n "${{ steps.dashboard.outputs.dashboard_pid }}" ]; then
+            kill ${{ steps.dashboard.outputs.dashboard_pid }} || true
+          fi
+          if [ -n "${{ steps.tunnel.outputs.tunnel_pid }}" ]; then
+            kill ${{ steps.tunnel.outputs.tunnel_pid }} || true
+          fi
