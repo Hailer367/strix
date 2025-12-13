@@ -1,4 +1,5 @@
 import logging
+import os
 import re
 import time
 import uuid
@@ -10,6 +11,16 @@ import libtmux
 
 
 logger = logging.getLogger(__name__)
+
+
+def _is_root_access_enabled() -> bool:
+    """Check if root access is enabled via environment variable."""
+    return os.getenv("STRIX_ROOT_ACCESS", "").lower() == "true"
+
+
+def _get_command_timeout() -> float:
+    """Get command timeout from environment."""
+    return float(os.getenv("STRIX_COMMAND_TIMEOUT", "30"))
 
 
 class BashCommandStatus(Enum):
@@ -382,6 +393,25 @@ class TerminalSession:
     ) -> dict[str, Any]:
         if not self._initialized:
             raise RuntimeError("Bash session is not initialized")
+
+        # Use extended timeout for root access mode (package installations, etc.)
+        if _is_root_access_enabled():
+            timeout = max(timeout, _get_command_timeout())
+
+        # Auto-prepend sudo for privileged commands when root access is enabled
+        if _is_root_access_enabled() and not is_input and not command.strip().startswith("sudo "):
+            # Check if this is a privileged command that needs sudo
+            privileged_prefixes = [
+                "apt-get", "apt ", "dpkg", "systemctl", "service",
+                "iptables", "ip ", "ifconfig", "route", "netstat",
+                "mount", "umount", "chmod", "chown", "chgrp",
+                "pip install", "npm install -g", "go install", "make install",
+            ]
+            cmd_lower = command.lower().strip()
+            for prefix in privileged_prefixes:
+                if cmd_lower.startswith(prefix):
+                    command = f"sudo {command}"
+                    break
 
         cur_pane_output = self._get_pane_content()
         ps1_matches = self._matches_ps1_metadata(cur_pane_output)

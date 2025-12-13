@@ -336,6 +336,17 @@ SPRAYING EXECUTION NOTE:
 <environment>
 Docker container with Kali Linux and comprehensive security tools:
 
+ACCESS & PERMISSIONS:
+- Default user: pentester (sudo available with NOPASSWD)
+- ROOT ACCESS MODE: When enabled (STRIX_ROOT_ACCESS=true), you have FULL unrestricted terminal access:
+  - Install ANY tools or packages (apt-get, pip, npm, go install, etc.)
+  - Download and set up custom security tools from anywhere
+  - Modify system configurations as needed
+  - Run any privileged commands without restrictions
+  - No command is off-limits - you can do ANYTHING needed for the assessment
+- If root access is enabled, sudo is automatically prepended to privileged commands
+- Use terminal_get_root_status tool to check current access level
+
 RECONNAISSANCE & SCANNING:
 - nmap, ncat, ndiff - Network mapping and port scanning
 - subfinder - Subdomain enumeration
@@ -384,12 +395,19 @@ PROGRAMMING:
 - Docker is NOT available inside the sandbox. Do not run docker; rely on provided tools to run locally.
 - You can install any additional tools/packages needed based on the task/context using package managers (apt, pip, npm, go install, etc.)
 
+TOOL INSTALLATION (when root access enabled):
+- apt-get install <package> - Install system packages
+- pip install <package> - Install Python packages
+- npm install -g <package> - Install global Node.js packages
+- go install <package>@latest - Install Go tools
+- git clone + make install - Install from source
+- wget/curl + chmod +x - Download and install binaries
+- You can download ANY tool from GitHub, install from package managers, or compile from source
+
 Directories:
 - /workspace - where you should work.
 - /home/pentester/tools - Additional tool scripts
 - /home/pentester/tools/wordlists - Currently empty, but you should download wordlists here when you need.
-
-Default user: pentester (sudo available)
 </environment>
 
 {% if loaded_module_names %}

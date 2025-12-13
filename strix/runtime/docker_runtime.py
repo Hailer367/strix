@@ -18,6 +18,25 @@ STRIX_IMAGE = os.getenv("STRIX_IMAGE", "ghcr.io/usestrix/strix-sandbox:0.1.10")
 logger = logging.getLogger(__name__)
 
 
+def _get_root_access_env() -> dict[str, str]:
+    """Get root access environment variables to pass to container."""
+    env_vars = {}
+
+    # Root access configuration
+    if os.getenv("STRIX_ROOT_ACCESS", "").lower() == "true":
+        env_vars["STRIX_ROOT_ACCESS"] = "true"
+
+    access_level = os.getenv("STRIX_ACCESS_LEVEL", "")
+    if access_level:
+        env_vars["STRIX_ACCESS_LEVEL"] = access_level
+
+    command_timeout = os.getenv("STRIX_COMMAND_TIMEOUT", "")
+    if command_timeout:
+        env_vars["STRIX_COMMAND_TIMEOUT"] = command_timeout
+
+    return env_vars
+
+
 class DockerRuntime(AbstractRuntime):
     def __init__(self) -> None:
         try:
@@ -104,6 +123,16 @@ class DockerRuntime(AbstractRuntime):
                 self._tool_server_port = tool_server_port
                 self._tool_server_token = tool_server_token
 
+                # Build environment variables including root access config
+                container_env = {
+                    "PYTHONUNBUFFERED": "1",
+                    "CAIDO_PORT": str(caido_port),
+                    "TOOL_SERVER_PORT": str(tool_server_port),
+                    "TOOL_SERVER_TOKEN": tool_server_token,
+                }
+                # Add root access environment variables
+                container_env.update(_get_root_access_env())
+
                 container = self.client.containers.run(
                     STRIX_IMAGE,
                     command="sleep infinity",
@@ -114,15 +143,11 @@ class DockerRuntime(AbstractRuntime):
                         f"{caido_port}/tcp": caido_port,
                         f"{tool_server_port}/tcp": tool_server_port,
                     },
-                    cap_add=["NET_ADMIN", "NET_RAW"],
+                    cap_add=["NET_ADMIN", "NET_RAW", "SYS_PTRACE"],
                     labels={"strix-scan-id": scan_id},
-                    environment={
-                        "PYTHONUNBUFFERED": "1",
-                        "CAIDO_PORT": str(caido_port),
-                        "TOOL_SERVER_PORT": str(tool_server_port),
-                        "TOOL_SERVER_TOKEN": tool_server_token,
-                    },
+                    environment=container_env,
                     tty=True,
+                    privileged=os.getenv("STRIX_ROOT_ACCESS", "").lower() == "true",
                 )
 
                 self._scan_container = container

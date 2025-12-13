@@ -18,6 +18,7 @@ from litellm.utils import supports_prompt_caching, supports_vision
 from strix.llm.config import LLMConfig
 from strix.llm.memory_compressor import MemoryCompressor
 from strix.llm.request_queue import get_global_queue
+from strix.llm.roocode_provider import configure_roocode_for_litellm, is_roocode_model
 from strix.llm.utils import _truncate_to_first_function, parse_tool_invocations
 from strix.prompts import load_prompt_modules
 from strix.tools import get_tools_prompt
@@ -35,6 +36,11 @@ _LLM_API_BASE = (
     or os.getenv("LITELLM_BASE_URL")
     or os.getenv("OLLAMA_API_BASE")
 )
+
+# Roo Code specific overrides (set when using Roo Code provider)
+_ROOCODE_API_KEY: str | None = None
+_ROOCODE_API_BASE: str | None = None
+_ROOCODE_MODEL_ID: str | None = None
 
 
 class LLMRequestFailedError(Exception):
@@ -439,19 +445,43 @@ class LLM:
         self,
         messages: list[dict[str, Any]],
     ) -> ModelResponse:
+        global _ROOCODE_API_KEY, _ROOCODE_API_BASE, _ROOCODE_MODEL_ID
+
         if not self._model_supports_vision():
             messages = self._filter_images_from_messages(messages)
 
+        # Check if using Roo Code provider
+        model_name = self.config.model_name
+        api_key = _LLM_API_KEY
+        api_base = _LLM_API_BASE
+
+        if self.config.is_roocode_model() or is_roocode_model(model_name):
+            # Configure Roo Code provider if not already done
+            if _ROOCODE_MODEL_ID is None:
+                try:
+                    _ROOCODE_MODEL_ID, _ROOCODE_API_KEY, _ROOCODE_API_BASE = (
+                        configure_roocode_for_litellm(model_name)
+                    )
+                    logger.info(f"Configured Roo Code provider: model={_ROOCODE_MODEL_ID}")
+                except RuntimeError as e:
+                    logger.error(f"Failed to configure Roo Code provider: {e}")
+                    raise
+
+            # Use Roo Code configuration
+            model_name = _ROOCODE_MODEL_ID
+            api_key = _ROOCODE_API_KEY
+            api_base = _ROOCODE_API_BASE
+
         completion_args: dict[str, Any] = {
-            "model": self.config.model_name,
+            "model": model_name,
             "messages": messages,
             "timeout": self.config.timeout,
         }
 
-        if _LLM_API_KEY:
-            completion_args["api_key"] = _LLM_API_KEY
-        if _LLM_API_BASE:
-            completion_args["api_base"] = _LLM_API_BASE
+        if api_key:
+            completion_args["api_key"] = api_key
+        if api_base:
+            completion_args["api_base"] = api_base
 
         if self._should_include_stop_param():
             completion_args["stop"] = ["</function>"]

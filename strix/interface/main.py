@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
 """
 Strix Agent Interface
+
+A powerful AI-driven penetration testing and bug bounty automation agent.
+
+Features:
+- Roo Code Cloud integration for free AI model usage
+- Root access mode for unrestricted terminal commands
+- Multi-target scanning capabilities
+- Real-time vulnerability detection
 """
 
 import argparse
@@ -32,6 +40,7 @@ from strix.interface.utils import (
     process_pull_line,
     validate_llm_response,
 )
+from strix.llm.roocode_provider import get_roocode_provider, ROOCODE_MODELS
 from strix.runtime.docker_runtime import STRIX_IMAGE
 from strix.telemetry.tracer import get_global_tracer
 
@@ -39,12 +48,60 @@ from strix.telemetry.tracer import get_global_tracer
 logging.getLogger().setLevel(logging.ERROR)
 
 
-def validate_environment() -> None:  # noqa: PLR0912, PLR0915
+def validate_environment(use_roocode: bool = False) -> None:  # noqa: PLR0912, PLR0915
     console = Console()
     missing_required_vars = []
     missing_optional_vars = []
 
-    if not os.getenv("STRIX_LLM"):
+    # Check if using Roo Code provider
+    strix_llm = os.getenv("STRIX_LLM", "")
+    is_roocode = use_roocode or strix_llm.startswith("roocode/")
+
+    if is_roocode:
+        # Roo Code mode - no API keys required
+        provider = get_roocode_provider()
+        if not provider.is_authenticated():
+            # Need to authenticate
+            console.print()
+            console.print("[bold cyan]🦉 Roo Code Cloud Authentication Required[/]")
+            console.print()
+
+            if not provider.login():
+                error_text = Text()
+                error_text.append("❌ ", style="bold red")
+                error_text.append("ROO CODE AUTHENTICATION FAILED", style="bold red")
+                error_text.append("\n\n", style="white")
+                error_text.append(
+                    "Could not authenticate with Roo Code Cloud.\n", style="white"
+                )
+                error_text.append(
+                    "Please try again or set ROOCODE_ACCESS_TOKEN manually.\n", style="white"
+                )
+
+                panel = Panel(
+                    error_text,
+                    title="[bold red]🛡️  STRIX AUTHENTICATION ERROR",
+                    title_align="center",
+                    border_style="red",
+                    padding=(1, 2),
+                )
+                console.print("\n")
+                console.print(panel)
+                console.print()
+                sys.exit(1)
+
+            console.print("[bold green]✅ Successfully authenticated with Roo Code Cloud[/]")
+            console.print()
+
+        # Set default model if not specified
+        if not strix_llm:
+            os.environ["STRIX_LLM"] = "roocode/grok-code-fast-1"
+
+        # Skip API key validation for Roo Code
+        return
+
+    # Standard mode - check for API configuration
+    if not strix_llm:
         missing_required_vars.append("STRIX_LLM")
 
     has_base_url = any(
@@ -265,6 +322,13 @@ Examples:
   # Custom instructions (from file)
   strix --target example.com --instruction-file ./instructions.txt
   strix --target https://app.com --instruction-file /path/to/detailed_instructions.md
+
+  # Use Roo Code Cloud for free AI models
+  strix --roocode --target https://example.com
+  strix --roocode-model grok-code-fast-1 --target ./my-app
+
+  # Enable root access for unrestricted tool installation
+  strix --root-access --target https://example.com
         """,
     )
 
@@ -309,6 +373,63 @@ Examples:
         help=(
             "Run in non-interactive mode (no TUI, exits on completion). "
             "Default is interactive mode with TUI."
+        ),
+    )
+
+    # Roo Code Cloud integration options
+    roocode_group = parser.add_argument_group("Roo Code Cloud Options")
+    roocode_group.add_argument(
+        "--roocode",
+        action="store_true",
+        help=(
+            "Use Roo Code Cloud for AI models (free, no API keys required). "
+            "Automatically authenticates via browser OAuth."
+        ),
+    )
+    roocode_group.add_argument(
+        "--roocode-login",
+        action="store_true",
+        help="Authenticate with Roo Code Cloud and exit.",
+    )
+    roocode_group.add_argument(
+        "--roocode-logout",
+        action="store_true",
+        help="Log out from Roo Code Cloud and exit.",
+    )
+    roocode_group.add_argument(
+        "--roocode-model",
+        type=str,
+        choices=list(ROOCODE_MODELS.keys()),
+        default="grok-code-fast-1",
+        help=(
+            "Roo Code model to use. Options: "
+            "grok-code-fast-1 (fast, 262k context), "
+            "roo/code-supernova (advanced, multimodal). "
+            "Default: grok-code-fast-1"
+        ),
+    )
+
+    # Root access options
+    access_group = parser.add_argument_group("Access Control Options")
+    access_group.add_argument(
+        "--root-access",
+        action="store_true",
+        help=(
+            "Enable root access mode for unrestricted terminal commands. "
+            "Allows the AI agent to install tools, modify system settings, "
+            "and execute privileged commands within the sandboxed container."
+        ),
+    )
+    access_group.add_argument(
+        "--access-level",
+        type=str,
+        choices=["standard", "elevated", "root"],
+        default="standard",
+        help=(
+            "Set the access level for terminal commands. "
+            "standard: Normal user access (default), "
+            "elevated: Can use sudo for specific commands, "
+            "root: Full unrestricted access."
         ),
     )
 
@@ -464,11 +585,49 @@ def main() -> None:
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
     args = parse_arguments()
+    console = Console()
+
+    # Handle Roo Code authentication commands
+    if args.roocode_login:
+        provider = get_roocode_provider()
+        console.print("\n[bold cyan]🦉 Authenticating with Roo Code Cloud...[/]\n")
+        if provider.login():
+            console.print("[bold green]✅ Successfully logged in to Roo Code Cloud![/]")
+            user_info = provider.get_user_info()
+            if user_info and user_info.get("email"):
+                console.print(f"   Logged in as: {user_info['email']}")
+        else:
+            console.print("[bold red]❌ Failed to log in to Roo Code Cloud[/]")
+            sys.exit(1)
+        sys.exit(0)
+
+    if args.roocode_logout:
+        provider = get_roocode_provider()
+        provider.logout()
+        console.print("[bold green]✅ Logged out from Roo Code Cloud[/]")
+        sys.exit(0)
+
+    # Configure Roo Code if requested
+    use_roocode = args.roocode or os.getenv("STRIX_USE_ROOCODE", "").lower() == "true"
+    if use_roocode:
+        os.environ["STRIX_USE_ROOCODE"] = "true"
+        os.environ["STRIX_LLM"] = f"roocode/{args.roocode_model}"
+        console.print(f"\n[bold cyan]🦉 Using Roo Code Cloud model: {args.roocode_model}[/]\n")
+
+    # Configure root access if requested
+    if args.root_access or args.access_level == "root":
+        os.environ["STRIX_ROOT_ACCESS"] = "true"
+        os.environ["STRIX_ACCESS_LEVEL"] = "root"
+        console.print("[bold yellow]⚠️  Root access enabled - unrestricted terminal commands[/]\n")
+    elif args.access_level:
+        os.environ["STRIX_ACCESS_LEVEL"] = args.access_level
+        if args.access_level == "elevated":
+            console.print("[bold cyan]🔧 Elevated access enabled - sudo available[/]\n")
 
     check_docker_installed()
     pull_docker_image()
 
-    validate_environment()
+    validate_environment(use_roocode=use_roocode)
     asyncio.run(warm_up_llm())
 
     if not args.run_name:
