@@ -7,6 +7,7 @@ through GitHub Actions.
 Features:
 - Configure-and-Fire: Set all parameters before starting autonomous scan
 - Roo Code Authentication: OAuth login directly from the dashboard
+- Qwen Code CLI Authentication: OAuth login for Qwen AI models
 - Real-time Monitoring: Live progress and findings display
 - Advanced Agent Configuration: Fine-tune Strix agent behavior
 - Extensible Configuration: Custom instructions, focus areas, and more
@@ -33,9 +34,11 @@ from .config import (
     OutputConfig,
     AgentBehaviorConfig,
     RooCodeConfig,
+    QwenCodeConfig,
     AuthStatus,
     ScanStatus,
     ROOCODE_MODELS,
+    QWENCODE_MODELS,
     DEFAULT_FOCUS_AREAS,
     PLANNING_DEPTHS,
     MEMORY_STRATEGIES,
@@ -64,10 +67,12 @@ __all__ = [
     "OutputConfig",
     "AgentBehaviorConfig",
     "RooCodeConfig",
+    "QwenCodeConfig",
     "AuthStatus",
     "ScanStatus",
     # Constants
     "ROOCODE_MODELS",
+    "QWENCODE_MODELS",
     "DEFAULT_FOCUS_AREAS",
     "PLANNING_DEPTHS",
     "MEMORY_STRATEGIES",

@@ -17,6 +17,7 @@ from litellm.utils import supports_prompt_caching, supports_vision
 
 from strix.llm.config import LLMConfig
 from strix.llm.memory_compressor import MemoryCompressor
+from strix.llm.qwencode_provider import configure_qwencode_for_litellm, is_qwencode_model
 from strix.llm.request_queue import get_global_queue
 from strix.llm.roocode_provider import configure_roocode_for_litellm, is_roocode_model
 from strix.llm.utils import _truncate_to_first_function, parse_tool_invocations
@@ -41,6 +42,11 @@ _LLM_API_BASE = (
 _ROOCODE_API_KEY: str | None = None
 _ROOCODE_API_BASE: str | None = None
 _ROOCODE_MODEL_ID: str | None = None
+
+# Qwen Code specific overrides (set when using Qwen Code provider)
+_QWENCODE_API_KEY: str | None = None
+_QWENCODE_API_BASE: str | None = None
+_QWENCODE_MODEL_ID: str | None = None
 
 
 class LLMRequestFailedError(Exception):
@@ -446,11 +452,12 @@ class LLM:
         messages: list[dict[str, Any]],
     ) -> ModelResponse:
         global _ROOCODE_API_KEY, _ROOCODE_API_BASE, _ROOCODE_MODEL_ID
+        global _QWENCODE_API_KEY, _QWENCODE_API_BASE, _QWENCODE_MODEL_ID
 
         if not self._model_supports_vision():
             messages = self._filter_images_from_messages(messages)
 
-        # Check if using Roo Code provider
+        # Check if using Roo Code or Qwen Code provider
         model_name = self.config.model_name
         api_key = _LLM_API_KEY
         api_base = _LLM_API_BASE
@@ -471,6 +478,23 @@ class LLM:
             model_name = _ROOCODE_MODEL_ID
             api_key = _ROOCODE_API_KEY
             api_base = _ROOCODE_API_BASE
+            
+        elif self.config.is_qwencode_model() or is_qwencode_model(model_name):
+            # Configure Qwen Code provider if not already done
+            if _QWENCODE_MODEL_ID is None:
+                try:
+                    _QWENCODE_MODEL_ID, _QWENCODE_API_KEY, _QWENCODE_API_BASE = (
+                        configure_qwencode_for_litellm(model_name)
+                    )
+                    logger.info(f"Configured Qwen Code provider: model={_QWENCODE_MODEL_ID}")
+                except RuntimeError as e:
+                    logger.error(f"Failed to configure Qwen Code provider: {e}")
+                    raise
+
+            # Use Qwen Code configuration
+            model_name = _QWENCODE_MODEL_ID
+            api_key = _QWENCODE_API_KEY
+            api_base = _QWENCODE_API_BASE
 
         completion_args: dict[str, Any] = {
             "model": model_name,

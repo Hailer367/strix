@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 class AIProvider(str, Enum):
     """Supported AI providers."""
     ROOCODE = "roocode"
+    QWENCODE = "qwencode"
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
     CUSTOM = "custom"
@@ -61,6 +62,20 @@ class RooCodeConfig(BaseModel):
     auth_status: AuthStatus = AuthStatus.NOT_AUTHENTICATED
 
 
+class QwenCodeConfig(BaseModel):
+    """Qwen Code CLI configuration."""
+    enabled: bool = False
+    model: str = "qwen3-coder-plus"
+    access_token: str | None = None
+    refresh_token: str | None = None
+    expires_at: float | None = None
+    user_email: str | None = None
+    user_id: str | None = None
+    api_endpoint: str | None = None
+    auto_authenticate: bool = True
+    auth_status: AuthStatus = AuthStatus.NOT_AUTHENTICATED
+
+
 class AIConfig(BaseModel):
     """AI provider configuration."""
     provider: AIProvider = AIProvider.ROOCODE
@@ -68,6 +83,7 @@ class AIConfig(BaseModel):
     api_key: str | None = None
     api_base: str | None = None
     roocode: RooCodeConfig = Field(default_factory=RooCodeConfig)
+    qwencode: QwenCodeConfig = Field(default_factory=QwenCodeConfig)
     timeout: int = 600
     max_retries: int = 3
     enable_prompt_caching: bool = True
@@ -176,6 +192,7 @@ class DashboardConfig:
     
     # Feature flags
     enable_roocode_auth: bool = True
+    enable_qwencode_auth: bool = True
     enable_root_access: bool = True
     enable_custom_tools: bool = True
     enable_advanced_config: bool = True
@@ -185,9 +202,14 @@ class DashboardConfig:
     max_targets: int = 10
     max_instructions_length: int = 10000
     
-    # OAuth configuration
+    # OAuth configuration - Roo Code
     roocode_auth_url: str = "https://app.roocode.com"
     roocode_api_url: str = "https://api.roocode.com"
+    
+    # OAuth configuration - Qwen Code CLI
+    qwencode_auth_url: str = "https://chat.qwen.ai"
+    qwencode_api_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    qwencode_auth_callback_port: int = 18766
 
 
 @dataclass
@@ -209,6 +231,15 @@ class DashboardState:
     roocode_access_token: str | None = None
     roocode_refresh_token: str | None = None
     roocode_token_expires_at: float | None = None
+    
+    # Qwen Code authentication state
+    qwencode_auth_status: AuthStatus = AuthStatus.NOT_AUTHENTICATED
+    qwencode_user_email: str | None = None
+    qwencode_user_id: str | None = None
+    qwencode_access_token: str | None = None
+    qwencode_refresh_token: str | None = None
+    qwencode_token_expires_at: float | None = None
+    qwencode_api_endpoint: str | None = None
     
     # OAuth callback state
     oauth_state: str | None = None
@@ -248,6 +279,68 @@ DEFAULT_FOCUS_AREAS = [
 ROOCODE_MODELS: dict = {
     # Empty by default - models should be fetched from API after authentication
     # This ensures we don't show outdated/incorrect models to users
+}
+
+
+# Qwen Code CLI models - fallback when API is unavailable
+# Reference: https://github.com/QwenLM/qwen-code
+QWENCODE_MODELS: dict = {
+    "qwen3-coder-plus": {
+        "name": "qwen3-coder-plus",
+        "display_name": "Qwen3 Coder Plus",
+        "description": "Advanced Qwen3 coding model with enhanced capabilities (2,000 free requests/day)",
+        "context_window": 131072,
+        "free": True,
+        "provider": "qwencode",
+        "capabilities": ["code", "chat", "analysis"],
+        "speed": "fast",
+    },
+    "qwen3-coder-plus-latest": {
+        "name": "qwen3-coder-plus-latest",
+        "display_name": "Qwen3 Coder Plus (Latest)",
+        "description": "Latest version of Qwen3 coding model",
+        "context_window": 131072,
+        "free": True,
+        "provider": "qwencode",
+        "capabilities": ["code", "chat", "analysis"],
+        "speed": "fast",
+    },
+    "qwen/qwen3-coder:free": {
+        "name": "qwen/qwen3-coder:free",
+        "display_name": "Qwen3 Coder (OpenRouter Free)",
+        "description": "Qwen3 Coder via OpenRouter free tier (1,000 calls/day)",
+        "context_window": 128000,
+        "free": True,
+        "provider": "openrouter",
+        "capabilities": ["code", "chat"],
+        "speed": "fast",
+    },
+}
+
+
+# Qwen Code CLI models
+# Reference: https://github.com/QwenLM/qwen-code
+QWENCODE_MODELS: dict = {
+    "qwen3-coder-plus": {
+        "name": "qwen3-coder-plus",
+        "display_name": "Qwen3 Coder Plus",
+        "description": "High-performance coding model optimized for complex tasks",
+        "context_window": 262000,
+        "free": True,
+        "provider": "qwencode",
+        "capabilities": ["code", "chat", "vision"],
+        "speed": "moderate",
+    },
+    "qwen3-coder": {
+        "name": "qwen3-coder",
+        "display_name": "Qwen3 Coder",
+        "description": "Balanced coding model for general development tasks",
+        "context_window": 131000,
+        "free": True,
+        "provider": "qwencode",
+        "capabilities": ["code", "chat"],
+        "speed": "fast",
+    },
 }
 
 
