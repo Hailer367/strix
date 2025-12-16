@@ -141,6 +141,162 @@
   <parameter=is_input>true</parameter>
   <parameter=terminal_id>python_session</parameter>
   </function>
+
+  # Create a temporary terminal for parallel work
+  <function=terminal_create_temporary>
+  <parameter=task_description>Running nmap scan on target</parameter>
+  </function>
+
+  # Execute command on temporary terminal
+  <function=terminal_execute>
+  <parameter=command>nmap -sV target.com</parameter>
+  <parameter=terminal_id>temp_1</parameter>
+  </function>
+
+  # Close temporary terminal when done
+  <function=terminal_close_temporary>
+  <parameter=terminal_id>temp_1</parameter>
+  </function>
+    </examples>
+  </tool>
+
+  <tool name="terminal_get_root_status">
+    <description>Get the current root access status and configuration. Returns information about capabilities, access level, and what operations are available.</description>
+    <parameters></parameters>
+    <returns type="Dict[str, Any]">
+      <description>Response containing:
+      - root_access_enabled: Whether root access is enabled
+      - access_level: Current access level (standard, elevated, root)
+      - command_timeout: Command timeout in seconds
+      - capabilities: Dict of available capabilities
+      - available_package_managers: List of available package managers
+      - note: Description of current access mode</description>
+    </returns>
+  </tool>
+
+  <tool name="terminal_create_temporary">
+    <description>Create a new temporary terminal with root access for parallel task execution.
+
+Temporary terminals allow the AI to work on multiple tasks simultaneously. Each temporary terminal has the same root access as the main terminal and can be used to run commands, install packages, and perform any terminal operations.
+
+Maximum of 7 temporary terminals can be active at once. The AI should close temporary terminals when tasks are complete to free up resources.</description>
+    <parameters>
+      <parameter name="task_description" type="string" required="false">
+        <description>Description of what this terminal will be used for. Helps with organization and debugging. Example: "Running nmap scan on target", "Installing dependencies", "Building project"</description>
+      </parameter>
+      <parameter name="timeout_minutes" type="number" required="false">
+        <description>Auto-close timeout in minutes (default: 30 minutes). After this time, the terminal will be automatically closed if not explicitly closed first.</description>
+      </parameter>
+    </parameters>
+    <returns type="Dict[str, Any]">
+      <description>Response containing:
+      - terminal_id: The unique ID for this temporary terminal (e.g., "temp_1")
+      - status: 'created' on success, 'limit_reached' if max terminals reached
+      - root_access: Root access configuration
+      - active_temporary_terminals: Current count of active temp terminals
+      - remaining_slots: Number of temp terminals that can still be created</description>
+    </returns>
+    <notes>
+  Usage workflow:
+  1. Create a temporary terminal: terminal_create_temporary(task_description="...")
+  2. Execute commands on it: terminal_execute(command="...", terminal_id="temp_1")
+  3. Close when done: terminal_close_temporary(terminal_id="temp_1")
+
+  Benefits:
+  - Run long tasks in parallel without blocking main terminal
+  - Organize work by task (one terminal per task)
+  - Better resource management and debugging
+
+  Example scenarios:
+  - Running a long scan while continuing analysis
+  - Installing packages while running tests
+  - Building different components in parallel
+    </notes>
+    <examples>
+  # Create terminal for a specific task
+  <function=terminal_create_temporary>
+  <parameter=task_description>Running nmap scan on target</parameter>
+  </function>
+
+  # Create terminal with custom timeout
+  <function=terminal_create_temporary>
+  <parameter=task_description>Building project dependencies</parameter>
+  <parameter=timeout_minutes>60</parameter>
+  </function>
+    </examples>
+  </tool>
+
+  <tool name="terminal_close_temporary">
+    <description>Close a temporary terminal and clean up its resources. Should be called when the task on a temporary terminal is complete. Closing temporary terminals frees up slots for new ones.</description>
+    <parameters>
+      <parameter name="terminal_id" type="string" required="true">
+        <description>The ID of the temporary terminal to close (e.g., "temp_1"). Must be a temporary terminal ID starting with "temp_".</description>
+      </parameter>
+    </parameters>
+    <returns type="Dict[str, Any]">
+      <description>Response containing:
+      - terminal_id: The closed terminal's ID
+      - status: 'closed' on success, 'invalid' if not a temporary terminal
+      - active_temporary_terminals: Remaining active temp terminals
+      - remaining_slots: Number of temp terminals that can be created</description>
+    </returns>
+    <examples>
+  <function=terminal_close_temporary>
+  <parameter=terminal_id>temp_1</parameter>
+  </function>
+    </examples>
+  </tool>
+
+  <tool name="terminal_list_temporary">
+    <description>List all active temporary terminals with their status and metadata. Use this to see which temporary terminals are available and their current state.</description>
+    <parameters></parameters>
+    <returns type="Dict[str, Any]">
+      <description>Response containing:
+      - temporary_terminals: List of temporary terminal info, each with:
+        - terminal_id: The terminal's unique ID
+        - task_description: What the terminal is being used for
+        - age_seconds: How long the terminal has been active
+        - timeout_remaining_seconds: Time until auto-close
+        - is_running: Whether commands are currently executing
+        - working_dir: Current working directory
+      - total_count: Number of active temporary terminals
+      - max_allowed: Maximum allowed (7)
+      - remaining_slots: How many more can be created</description>
+    </returns>
+    <examples>
+  <function=terminal_list_temporary>
+  </function>
+    </examples>
+  </tool>
+
+  <tool name="terminal_list_all">
+    <description>List all terminal sessions including the main terminal and temporary terminals. Provides a complete overview of all active terminals and their status.</description>
+    <parameters></parameters>
+    <returns type="Dict[str, Any]">
+      <description>Response containing:
+      - sessions: Dictionary of all terminal sessions with their info
+      - total_count: Total number of active sessions
+      - temporary_terminal_count: Number of temporary terminals
+      - max_temporary_terminals: Maximum allowed temporary terminals (7)</description>
+    </returns>
+    <examples>
+  <function=terminal_list_all>
+  </function>
+    </examples>
+  </tool>
+
+  <tool name="terminal_cleanup_expired">
+    <description>Clean up temporary terminals that have exceeded their timeout. Temporary terminals are automatically cleaned up after their timeout (default 30 minutes), but this tool can be used to force cleanup.</description>
+    <parameters></parameters>
+    <returns type="Dict[str, Any]">
+      <description>Response containing:
+      - cleaned_up_terminals: List of terminal IDs that were closed
+      - count: Number of terminals cleaned up
+      - message: Summary message</description>
+    </returns>
+    <examples>
+  <function=terminal_cleanup_expired>
+  </function>
     </examples>
   </tool>
 </tools>

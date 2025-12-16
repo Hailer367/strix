@@ -585,7 +585,7 @@ def create_app(config: DashboardConfig | None = None) -> FastAPI:
             "instructions": "Sign in with your Roo Code Cloud account (GitHub, Google, or email)",
         }
     
-    @app.get("/api/roocode/callback")
+    @app.get("/api/roocode/callback", response_model=None)
     async def roocode_callback(
         request: Request,
         token: str | None = None,
