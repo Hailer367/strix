@@ -40,27 +40,13 @@ ROOCODE_INFERENCE_URL = "https://api.roocode.com/v1"
 ROOCODE_CONFIG_DIR = Path.home() / ".strix"
 ROOCODE_CONFIG_FILE = ROOCODE_CONFIG_DIR / "roocode_config.json"
 
-# Available Roo Code Cloud models
-# Based on: https://docs.roocode.com/providers/roo-code-cloud
-ROOCODE_MODELS = {
-    "grok-code-fast-1": {
-        "name": "grok-code-fast-1",
-        "display_name": "Grok Code Fast 1",
-        "description": "Fast coding model - Best for quick edits and high-speed iterations",
-        "context_window": 262000,
-        "free": True,
-        "provider": "xai",
-        "capabilities": ["code", "chat"],
-    },
-    "roo/code-supernova": {
-        "name": "roo/code-supernova",
-        "display_name": "Code Supernova",
-        "description": "Advanced model - Best for complex reasoning and multimodal tasks",
-        "context_window": 200000,
-        "free": True,
-        "provider": "roo",
-        "capabilities": ["code", "chat", "vision"],
-    },
+# Fallback Roo Code Cloud models - used when API is unavailable
+# Based on official documentation: https://docs.roocode.com/providers/roo-code-cloud
+# NOTE: Models should be fetched dynamically from the API when authenticated.
+# These fallback models are provided only for offline scenarios.
+ROOCODE_MODELS: dict = {
+    # Empty by default to force API fetch after authentication
+    # This prevents showing potentially outdated model information
 }
 
 
