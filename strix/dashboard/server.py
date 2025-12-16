@@ -134,19 +134,24 @@ async def fetch_roocode_models(force_refresh: bool = False) -> dict[str, dict[st
     """
     Fetch available models from Roo Code Cloud API.
     
-    This attempts to get the latest models from the API,
-    with fallback to hardcoded defaults if the API is unavailable.
+    Models are ONLY fetched when the user is authenticated.
+    No fallback to hardcoded models - we only show what the API provides.
     
     Args:
         force_refresh: Force refresh from API even if cache is valid
         
     Returns:
-        Dictionary of available models
+        Dictionary of available models, empty if not authenticated or API fails
     """
     global _cached_roocode_models, _models_cache_time
     
-    # Use cached models if available and not expired (cache for 1 hour)
-    cache_ttl = 3600  # 1 hour
+    # Return empty if not authenticated - models require login
+    if dashboard_state.auth_status != AuthStatus.AUTHENTICATED or not dashboard_state.roocode_access_token:
+        logger.debug("Not authenticated, returning empty models list")
+        return {}
+    
+    # Use cached models if available and not expired (cache for 30 minutes)
+    cache_ttl = 1800  # 30 minutes - shorter cache for fresher data
     if (
         not force_refresh
         and _cached_roocode_models
@@ -154,43 +159,66 @@ async def fetch_roocode_models(force_refresh: bool = False) -> dict[str, dict[st
     ):
         return _cached_roocode_models
 
-    # Try to fetch from API if authenticated
-    if dashboard_state.auth_status == AuthStatus.AUTHENTICATED and dashboard_state.roocode_access_token:
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(
-                    f"{ROOCODE_API_URL}/v1/models",
-                    headers={"Authorization": f"Bearer {dashboard_state.roocode_access_token}"},
-                    timeout=30,
-                )
-                if response.status_code == 200:
-                    data = response.json()
-                    models = {}
-                    for model in data.get("data", []):
-                        model_id = model.get("id", "")
-                        if model_id:
-                            models[model_id] = {
-                                "name": model_id,
-                                "display_name": model.get("name", model_id),
-                                "description": model.get("description", ""),
-                                "context_window": model.get("context_length", 128000),
-                                "free": model.get("pricing", {}).get("free", False),
-                                "provider": model.get("provider", "roocode"),
-                                "capabilities": model.get("capabilities", ["code", "chat"]),
-                                "speed": model.get("speed", "moderate"),
-                                "cost": "free" if model.get("pricing", {}).get("free", False) else "paid",
-                            }
-                    if models:
-                        _cached_roocode_models = models
-                        _models_cache_time = time.time()
-                        logger.info(f"Fetched {len(models)} models from Roo Code Cloud API")
-                        return models
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"Failed to fetch models from API: {e}")
-
-    # Fallback to hardcoded models from config
-    logger.info("Using default Roo Code models from config")
-    return ROOCODE_MODELS.copy()
+    # Fetch models from API
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{ROOCODE_API_URL}/v1/models",
+                headers={"Authorization": f"Bearer {dashboard_state.roocode_access_token}"},
+                timeout=30,
+            )
+            
+            if response.status_code == 401:
+                # Token expired or invalid
+                logger.warning("Roo Code token appears invalid, clearing auth state")
+                dashboard_state.auth_status = AuthStatus.EXPIRED
+                return {}
+            
+            if response.status_code == 200:
+                data = response.json()
+                models = {}
+                
+                # Handle both OpenAI-style response (data array) and direct array
+                model_list = data.get("data", []) if isinstance(data, dict) else data if isinstance(data, list) else []
+                
+                for model in model_list:
+                    model_id = model.get("id", "")
+                    if model_id:
+                        # Parse model metadata
+                        pricing = model.get("pricing", {})
+                        is_free = pricing.get("free", False) if isinstance(pricing, dict) else False
+                        
+                        models[model_id] = {
+                            "name": model_id,
+                            "display_name": model.get("name", model_id),
+                            "description": model.get("description", "AI model from Roo Code Cloud"),
+                            "context_window": model.get("context_length", model.get("context_window", 128000)),
+                            "free": is_free,
+                            "provider": model.get("provider", "roocode"),
+                            "capabilities": model.get("capabilities", ["code", "chat"]),
+                            "speed": model.get("speed", "moderate"),
+                            "cost": "free" if is_free else "paid",
+                        }
+                
+                if models:
+                    _cached_roocode_models = models
+                    _models_cache_time = time.time()
+                    logger.info(f"Fetched {len(models)} models from Roo Code Cloud API")
+                    return models
+                else:
+                    logger.warning("API returned empty model list")
+                    return {}
+            else:
+                logger.warning(f"Failed to fetch models: HTTP {response.status_code}")
+                # Return cached models if available, otherwise empty
+                return _cached_roocode_models if _cached_roocode_models else {}
+                
+    except httpx.TimeoutException:
+        logger.warning("Timeout fetching models from Roo Code API")
+        return _cached_roocode_models if _cached_roocode_models else {}
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Failed to fetch models from API: {e}")
+        return _cached_roocode_models if _cached_roocode_models else {}
 
 
 @asynccontextmanager
@@ -477,12 +505,28 @@ def create_app(config: DashboardConfig | None = None) -> FastAPI:
         }
     
     @app.get("/api/models")
-    async def get_models() -> dict[str, Any]:
-        """Get available AI models and configuration options."""
-        # Fetch dynamic models from Roo Code Cloud if authenticated
-        roocode_models = await fetch_roocode_models()
+    async def get_models(refresh: bool = False) -> dict[str, Any]:
+        """Get available AI models and configuration options.
+        
+        Models are only fetched from the API if the user is authenticated.
+        When not authenticated, returns an empty model list to indicate
+        that login is required.
+        
+        Args:
+            refresh: Force refresh models from API (ignoring cache)
+        """
+        # Only fetch models if authenticated
+        if dashboard_state.auth_status == AuthStatus.AUTHENTICATED:
+            roocode_models = await fetch_roocode_models(force_refresh=refresh)
+        else:
+            # Return empty models when not authenticated
+            # This signals to the frontend that login is required
+            roocode_models = {}
+        
         return {
             "roocode": roocode_models,
+            "authenticated": dashboard_state.auth_status == AuthStatus.AUTHENTICATED,
+            "auth_status": dashboard_state.auth_status.value,
             "focus_areas": DEFAULT_FOCUS_AREAS,
             "planning_depths": PLANNING_DEPTHS,
             "memory_strategies": MEMORY_STRATEGIES,
@@ -551,8 +595,13 @@ def create_app(config: DashboardConfig | None = None) -> FastAPI:
         state: str | None = None,
         error: str | None = None,
         error_description: str | None = None,
-    ) -> HTMLResponse:
-        """Handle Roo Code OAuth callback."""
+    ) -> HTMLResponse | RedirectResponse:
+        """Handle Roo Code OAuth callback.
+        
+        This handles the OAuth redirect from Roo Code Cloud authentication.
+        After successful authentication, it redirects back to the dashboard
+        with the auth state properly set.
+        """
         
         if error:
             error_msg = error_description or error
@@ -596,11 +645,17 @@ def create_app(config: DashboardConfig | None = None) -> FastAPI:
             # Set environment variable for the agent
             os.environ["ROOCODE_ACCESS_TOKEN"] = received_token
             
+            # Clear any cached models to force refresh with new token
+            global _cached_roocode_models, _models_cache_time
+            _cached_roocode_models = None
+            _models_cache_time = 0
+            
             await broadcast_update({
                 "type": "auth_success",
                 "user_email": dashboard_state.roocode_user_email,
             })
             
+            # Return success page that will redirect to dashboard or close popup
             return HTMLResponse(content=get_auth_result_html(True), status_code=200)
         
         # Handle OAuth authorization code exchange
@@ -681,6 +736,10 @@ def create_app(config: DashboardConfig | None = None) -> FastAPI:
                 
                 # Set environment variable
                 os.environ["ROOCODE_ACCESS_TOKEN"] = received_token
+                
+                # Clear any cached models to force refresh with new token
+                _cached_roocode_models = None
+                _models_cache_time = 0
                 
                 await broadcast_update({
                     "type": "auth_success",
@@ -907,7 +966,12 @@ def export_config_to_env(config: ScanConfig) -> None:
 
 
 def get_auth_result_html(success: bool, error: str | None = None) -> str:
-    """Generate HTML page for auth callback result."""
+    """Generate HTML page for auth callback result.
+    
+    This page handles both popup window and full page redirect scenarios.
+    It attempts to notify the parent/opener window and auto-close if opened as popup,
+    otherwise provides a manual redirect link to the dashboard.
+    """
     if success:
         return '''<!DOCTYPE html>
 <html>
@@ -925,16 +989,42 @@ def get_auth_result_html(success: bool, error: str | None = None) -> str:
         .success { color: #22c55e; }
         .btn { display: inline-block; margin-top: 20px; padding: 12px 24px;
                background: #22c55e; color: #000; text-decoration: none;
-               border-radius: 8px; font-weight: 600; }
+               border-radius: 8px; font-weight: 600; cursor: pointer; }
+        .btn:hover { background: #16a34a; }
+        .redirect-info { color: #94a3b8; font-size: 0.875rem; margin-top: 20px; }
+        .redirect-link { color: #22c55e; text-decoration: underline; cursor: pointer; }
     </style>
     <script>
-        // Notify parent window and close
-        setTimeout(() => {
+        // Notify parent window and handle redirect
+        (function() {
+            let handled = false;
+            
+            // Try to notify opener window (popup scenario)
             if (window.opener) {
-                window.opener.postMessage({ type: 'roocode_auth_success' }, '*');
-                window.close();
+                try {
+                    window.opener.postMessage({ type: 'roocode_auth_success' }, '*');
+                    handled = true;
+                    // Auto-close popup after short delay
+                    setTimeout(() => {
+                        window.close();
+                    }, 1500);
+                } catch (e) {
+                    console.log('Could not communicate with opener:', e);
+                }
             }
-        }, 2000);
+            
+            // If not a popup, redirect to dashboard after delay
+            if (!handled && !window.opener) {
+                document.getElementById('redirect-info').style.display = 'block';
+                setTimeout(() => {
+                    window.location.href = '/';
+                }, 2000);
+            }
+        })();
+        
+        function goToDashboard() {
+            window.location.href = '/';
+        }
     </script>
 </head>
 <body>
@@ -942,8 +1032,11 @@ def get_auth_result_html(success: bool, error: str | None = None) -> str:
         <div class="icon">🦉</div>
         <h1>Authentication Successful!</h1>
         <p class="success">✓ Connected to Roo Code Cloud</p>
-        <p>You can now close this window and return to the dashboard.</p>
-        <p style="color: #94a3b8; font-size: 0.875rem;">This window will close automatically...</p>
+        <p>You are now authenticated and can use Roo Code Cloud models.</p>
+        <button class="btn" onclick="goToDashboard()">Go to Dashboard</button>
+        <p id="redirect-info" class="redirect-info" style="display: none;">
+            Redirecting to dashboard... <span class="redirect-link" onclick="goToDashboard()">Click here</span> if not redirected.
+        </p>
     </div>
 </body>
 </html>'''
@@ -962,15 +1055,34 @@ def get_auth_result_html(success: bool, error: str | None = None) -> str:
         p {{ color: #e5e5e5; margin: 10px 0; }}
         .icon {{ font-size: 64px; margin-bottom: 20px; }}
         .error {{ color: #fca5a5; background: rgba(239, 68, 68, 0.2);
-                 padding: 10px 15px; border-radius: 8px; margin: 15px 0; }}
+                 padding: 10px 15px; border-radius: 8px; margin: 15px 0; word-break: break-word; }}
         .btn {{ display: inline-block; margin-top: 20px; padding: 12px 24px;
                background: #3b82f6; color: #fff; text-decoration: none;
                border-radius: 8px; font-weight: 600; cursor: pointer; }}
+        .btn:hover {{ background: #2563eb; }}
+        .btn-secondary {{ background: #475569; margin-left: 10px; }}
+        .btn-secondary:hover {{ background: #64748b; }}
     </style>
     <script>
         // Notify parent window
         if (window.opener) {{
-            window.opener.postMessage({{ type: 'roocode_auth_failed', error: '{error or "Unknown error"}' }}, '*');
+            try {{
+                window.opener.postMessage({{ type: 'roocode_auth_failed', error: '{error or "Unknown error"}' }}, '*');
+            }} catch (e) {{
+                console.log('Could not communicate with opener:', e);
+            }}
+        }}
+        
+        function tryAgain() {{
+            if (window.opener) {{
+                window.close();
+            }} else {{
+                window.location.href = '/';
+            }}
+        }}
+        
+        function goToDashboard() {{
+            window.location.href = '/';
         }}
     </script>
 </head>
@@ -979,8 +1091,9 @@ def get_auth_result_html(success: bool, error: str | None = None) -> str:
         <div class="icon">❌</div>
         <h1>Authentication Failed</h1>
         <p class="error">{error or "Unknown error occurred"}</p>
-        <p>Please close this window and try again.</p>
-        <button class="btn" onclick="window.close()">Close Window</button>
+        <p>Please try again or contact support if the issue persists.</p>
+        <button class="btn" onclick="tryAgain()">Try Again</button>
+        <button class="btn btn-secondary" onclick="goToDashboard()">Go to Dashboard</button>
     </div>
 </body>
 </html>'''
@@ -2097,28 +2210,57 @@ def get_dashboard_html() -> str:
         }
         
         // Fetch and render available models
-        async function fetchAndRenderModels() {
+        async function fetchAndRenderModels(forceRefresh = false) {
             try {
-                const response = await fetch('/api/models');
+                const url = forceRefresh ? '/api/models?refresh=true' : '/api/models';
+                const response = await fetch(url);
                 const data = await response.json();
                 availableModels = data.roocode || {};
-                renderModelCards();
+                const apiAuthenticated = data.authenticated || false;
+                
+                // Update local auth state from API response
+                if (apiAuthenticated && !isAuthenticated) {
+                    // API says we're authenticated but local state doesn't know
+                    // This can happen after redirect-based login
+                    checkAuthStatus();
+                }
+                
+                renderModelCards(apiAuthenticated);
+                
+                if (forceRefresh && apiAuthenticated) {
+                    const modelCount = Object.keys(availableModels).length;
+                    addLog(`Refreshed models: ${modelCount} model(s) available`);
+                }
             } catch (error) {
                 console.error('Failed to fetch models:', error);
                 modelCardsContainer.innerHTML = `
                     <div class="model-card" style="text-align: center; color: var(--accent-danger);">
-                        <p>Failed to load models. <a href="#" onclick="fetchAndRenderModels(); return false;">Retry</a></p>
+                        <p>Failed to load models. <a href="#" onclick="fetchAndRenderModels(true); return false;">Retry</a></p>
                     </div>
                 `;
             }
         }
         
-        function renderModelCards() {
+        function renderModelCards(apiAuthenticated = false) {
             const models = Object.entries(availableModels);
+            
+            // Show login required message if not authenticated
+            if (!isAuthenticated && !apiAuthenticated) {
+                modelCardsContainer.innerHTML = `
+                    <div class="model-card" style="text-align: center; padding: 2rem;">
+                        <div style="font-size: 2rem; margin-bottom: 1rem;">&#128274;</div>
+                        <p style="color: var(--accent-warning); font-weight: 500; margin-bottom: 0.5rem;">Login Required</p>
+                        <p style="color: var(--text-secondary); font-size: 0.8125rem;">Please login with your Roo Code Cloud account to access AI models.</p>
+                    </div>
+                `;
+                selectedModel = null;
+                return;
+            }
+            
             if (models.length === 0) {
                 modelCardsContainer.innerHTML = `
                     <div class="model-card" style="text-align: center; color: var(--text-secondary);">
-                        <p>No models available. Please login to Roo Code Cloud to access models.</p>
+                        <p>No models available from Roo Code Cloud. Click refresh to try again.</p>
                     </div>
                 `;
                 return;
@@ -2180,8 +2322,12 @@ def get_dashboard_html() -> str:
         
         // Refresh models button
         document.getElementById('refreshModelsBtn').addEventListener('click', () => {
-            addLog('Refreshing available models...');
-            fetchAndRenderModels();
+            if (!isAuthenticated) {
+                addLog('Please login first to refresh models');
+                return;
+            }
+            addLog('Refreshing available models from Roo Code Cloud...');
+            fetchAndRenderModels(true);  // Force refresh from API
         });
         
         // Focus area selection
@@ -2266,7 +2412,7 @@ def get_dashboard_html() -> str:
                             if (statusData.authenticated && !isAuthenticated) {
                                 updateAuthStatus(true, statusData.user_email);
                                 addLog('Authentication successful (via polling)');
-                                fetchAndRenderModels();
+                                fetchAndRenderModels(true);  // Force refresh after login
                                 clearInterval(pollInterval);
                                 if (authWindow && !authWindow.closed) {
                                     authWindow.close();
@@ -2285,18 +2431,27 @@ def get_dashboard_html() -> str:
             try {
                 await fetch('/api/roocode/logout', { method: 'POST' });
                 updateAuthStatus(false);
+                availableModels = {};  // Clear models on logout
+                renderModelCards(false);  // Re-render to show login required
                 addLog('Logged out successfully');
             } catch (error) {
                 addLog('Logout error: ' + error.message);
             }
         });
         
-        // Check auth status
+        // Check auth status and sync UI state
         async function checkAuthStatus() {
             try {
                 const response = await fetch('/api/roocode/status');
                 const data = await response.json();
+                const wasAuthenticated = isAuthenticated;
                 updateAuthStatus(data.authenticated, data.user_email);
+                
+                // If auth state changed to authenticated, refresh models
+                if (data.authenticated && !wasAuthenticated) {
+                    addLog('Session restored - fetching available models...');
+                    await fetchAndRenderModels(true);
+                }
             } catch (error) {
                 console.error('Error checking auth status:', error);
             }
