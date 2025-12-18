@@ -37,6 +37,7 @@ from pydantic import ValidationError
 
 from .config import (
     DEFAULT_FOCUS_AREAS,
+    QWENCODE_MODELS,
     ROOCODE_MODELS,
     PLANNING_DEPTHS,
     MEMORY_STRATEGIES,
@@ -50,6 +51,7 @@ from .config import (
     DashboardConfig,
     DashboardState,
     OutputConfig,
+    QwenCodeConfig,
     RooCodeConfig,
     ScanConfig,
     ScanStatus,
@@ -73,9 +75,19 @@ ROOCODE_INFERENCE_URL = "https://api.roocode.com/v1"
 ROOCODE_CONFIG_DIR = Path.home() / ".strix"
 ROOCODE_CONFIG_FILE = ROOCODE_CONFIG_DIR / "roocode_config.json"
 
+# Qwen Code CLI configuration
+QWENCODE_AUTH_URL = "https://qwen.ai"
+QWENCODE_API_URL = "https://chat.qwen.ai"
+QWENCODE_INFERENCE_URL = "https://chat.qwen.ai/api/v1"
+QWENCODE_DASHSCOPE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+QWENCODE_MODELSCOPE_URL = "https://api-inference.modelscope.cn/v1"
+QWENCODE_CONFIG_FILE = ROOCODE_CONFIG_DIR / "qwencode_config.json"
+
 # Cache for dynamic models
 _cached_roocode_models: dict[str, dict[str, Any]] | None = None
 _models_cache_time: float = 0
+_cached_qwencode_models: dict[str, dict[str, Any]] | None = None
+_qwencode_models_cache_time: float = 0
 
 # Global state
 dashboard_config = DashboardConfig()
@@ -127,6 +139,44 @@ def load_roocode_credentials() -> dict[str, Any] | None:
                 return json.load(f)
         except (json.JSONDecodeError, OSError) as e:
             logger.warning(f"Failed to load Roo Code credentials: {e}")
+    return None
+
+
+def save_qwencode_credentials(
+    access_token: str,
+    refresh_token: str | None = None,
+    expires_at: float | None = None,
+    user_email: str | None = None,
+    user_id: str | None = None,
+    api_endpoint: str | None = None,
+) -> None:
+    """Save Qwen Code credentials to config file."""
+    try:
+        ROOCODE_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        data = {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "expires_at": expires_at,
+            "user_email": user_email,
+            "user_id": user_id,
+            "api_endpoint": api_endpoint,
+        }
+        with open(QWENCODE_CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        QWENCODE_CONFIG_FILE.chmod(0o600)
+        logger.info("Saved Qwen Code credentials to config")
+    except OSError as e:
+        logger.warning(f"Failed to save Qwen Code credentials: {e}")
+
+
+def load_qwencode_credentials() -> dict[str, Any] | None:
+    """Load Qwen Code credentials from config file."""
+    if QWENCODE_CONFIG_FILE.exists():
+        try:
+            with open(QWENCODE_CONFIG_FILE, encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(f"Failed to load Qwen Code credentials: {e}")
     return None
 
 
@@ -221,6 +271,76 @@ async def fetch_roocode_models(force_refresh: bool = False) -> dict[str, dict[st
         return _cached_roocode_models if _cached_roocode_models else {}
 
 
+async def fetch_qwencode_models(force_refresh: bool = False) -> dict[str, dict[str, Any]]:
+    """
+    Fetch available models from Qwen Code CLI API.
+    
+    Returns default models for Qwen Code since they have well-known model names.
+    
+    Args:
+        force_refresh: Force refresh from API even if cache is valid
+        
+    Returns:
+        Dictionary of available models
+    """
+    global _cached_qwencode_models, _qwencode_models_cache_time
+    
+    # Return default models if not authenticated
+    if dashboard_state.qwencode_auth_status != AuthStatus.AUTHENTICATED or not dashboard_state.qwencode_access_token:
+        logger.debug("Not authenticated with Qwen Code, returning default models")
+        return QWENCODE_MODELS.copy()
+    
+    # Use cached models if available and not expired (cache for 30 minutes)
+    cache_ttl = 1800
+    if (
+        not force_refresh
+        and _cached_qwencode_models
+        and (time.time() - _qwencode_models_cache_time) < cache_ttl
+    ):
+        return _cached_qwencode_models
+
+    # Determine API endpoint
+    api_base = dashboard_state.qwencode_api_endpoint or QWENCODE_DASHSCOPE_URL
+
+    # Try to fetch models from API
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{api_base}/models",
+                headers={"Authorization": f"Bearer {dashboard_state.qwencode_access_token}"},
+                timeout=30,
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                models = {}
+                model_list = data.get("data", []) if isinstance(data, dict) else data if isinstance(data, list) else []
+                
+                for model in model_list:
+                    model_id = model.get("id", "")
+                    if model_id and ("qwen" in model_id.lower() or "coder" in model_id.lower()):
+                        models[model_id] = {
+                            "name": model_id,
+                            "display_name": model.get("name", model_id),
+                            "description": model.get("description", "Qwen coding model"),
+                            "context_window": model.get("context_length", 131000),
+                            "free": True,
+                            "provider": "qwencode",
+                            "capabilities": ["code", "chat"],
+                            "speed": "fast",
+                        }
+                
+                if models:
+                    _cached_qwencode_models = models
+                    _qwencode_models_cache_time = time.time()
+                    return models
+                    
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Failed to fetch Qwen Code models: {e}")
+    
+    return QWENCODE_MODELS.copy()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> Any:
     """Application lifespan manager."""
@@ -247,6 +367,33 @@ async def lifespan(app: FastAPI) -> Any:
         # Save to config file for persistence
         save_roocode_credentials(env_token, expires_at=time.time() + 3600 * 24 * 365)
         logger.info("Using Roo Code token from environment")
+    
+    # Check for existing Qwen Code credentials
+    qwen_creds = load_qwencode_credentials()
+    if qwen_creds and qwen_creds.get("access_token"):
+        expires_at = qwen_creds.get("expires_at", 0)
+        if expires_at == 0 or time.time() < expires_at:
+            dashboard_state.qwencode_auth_status = AuthStatus.AUTHENTICATED
+            dashboard_state.qwencode_access_token = qwen_creds["access_token"]
+            dashboard_state.qwencode_refresh_token = qwen_creds.get("refresh_token")
+            dashboard_state.qwencode_user_email = qwen_creds.get("user_email")
+            dashboard_state.qwencode_user_id = qwen_creds.get("user_id")
+            dashboard_state.qwencode_token_expires_at = expires_at
+            dashboard_state.qwencode_api_endpoint = qwen_creds.get("api_endpoint")
+            logger.info("Loaded existing Qwen Code credentials")
+    
+    # Check for Qwen Code environment token
+    qwen_env_token = os.getenv("QWENCODE_ACCESS_TOKEN") or os.getenv("QWENCODE_API_KEY")
+    if qwen_env_token and dashboard_state.qwencode_auth_status != AuthStatus.AUTHENTICATED:
+        dashboard_state.qwencode_auth_status = AuthStatus.AUTHENTICATED
+        dashboard_state.qwencode_access_token = qwen_env_token
+        dashboard_state.qwencode_api_endpoint = os.getenv("QWENCODE_API_BASE") or QWENCODE_DASHSCOPE_URL
+        save_qwencode_credentials(
+            qwen_env_token,
+            expires_at=time.time() + 3600 * 24 * 365,
+            api_endpoint=dashboard_state.qwencode_api_endpoint
+        )
+        logger.info("Using Qwen Code token from environment")
     
     yield
     
@@ -515,18 +662,23 @@ def create_app(config: DashboardConfig | None = None) -> FastAPI:
         Args:
             refresh: Force refresh models from API (ignoring cache)
         """
-        # Only fetch models if authenticated
+        # Only fetch Roo Code models if authenticated
         if dashboard_state.auth_status == AuthStatus.AUTHENTICATED:
             roocode_models = await fetch_roocode_models(force_refresh=refresh)
         else:
-            # Return empty models when not authenticated
-            # This signals to the frontend that login is required
             roocode_models = {}
+        
+        # Fetch Qwen Code models (defaults available even without auth)
+        qwencode_models = await fetch_qwencode_models(force_refresh=refresh)
         
         return {
             "roocode": roocode_models,
+            "qwencode": qwencode_models,
+            "roocode_authenticated": dashboard_state.auth_status == AuthStatus.AUTHENTICATED,
+            "qwencode_authenticated": dashboard_state.qwencode_auth_status == AuthStatus.AUTHENTICATED,
             "authenticated": dashboard_state.auth_status == AuthStatus.AUTHENTICATED,
             "auth_status": dashboard_state.auth_status.value,
+            "qwencode_auth_status": dashboard_state.qwencode_auth_status.value,
             "focus_areas": DEFAULT_FOCUS_AREAS,
             "planning_depths": PLANNING_DEPTHS,
             "memory_strategies": MEMORY_STRATEGIES,
@@ -826,6 +978,149 @@ def create_app(config: DashboardConfig | None = None) -> FastAPI:
             raise HTTPException(status_code=500, detail=str(e)) from e
     
     # =========================================================================
+    # Qwen Code CLI OAuth Routes
+    # =========================================================================
+    
+    @app.get("/api/qwencode/status")
+    async def qwencode_status() -> dict[str, Any]:
+        """Get Qwen Code CLI authentication status."""
+        return {
+            "authenticated": dashboard_state.qwencode_auth_status == AuthStatus.AUTHENTICATED,
+            "status": dashboard_state.qwencode_auth_status.value,
+            "user_email": dashboard_state.qwencode_user_email,
+            "user_id": dashboard_state.qwencode_user_id,
+            "expires_at": dashboard_state.qwencode_token_expires_at,
+            "api_endpoint": dashboard_state.qwencode_api_endpoint,
+        }
+    
+    @app.get("/api/qwencode/login")
+    async def qwencode_login_redirect(request: Request) -> dict[str, Any]:
+        """Get the Qwen Code CLI OAuth login URL."""
+        state = secrets.token_urlsafe(16)
+        dashboard_state.oauth_state = state
+        dashboard_state.qwencode_auth_status = AuthStatus.AUTHENTICATING
+        
+        host = request.headers.get("host", f"localhost:{dashboard_config.port}")
+        scheme = request.headers.get("x-forwarded-proto", "http")
+        callback_url = f"{scheme}://{host}/api/qwencode/callback"
+        
+        auth_url = f"{QWENCODE_AUTH_URL}/?redirect_uri={callback_url}&state={state}&app=strix"
+        
+        await broadcast_update({
+            "type": "qwencode_auth_started",
+            "status": "authenticating",
+        })
+        
+        return {
+            "auth_url": auth_url,
+            "state": state,
+            "callback_url": callback_url,
+            "instructions": "Sign in with your Qwen AI account to get 2,000 free requests per day",
+        }
+    
+    @app.get("/api/qwencode/callback", response_model=None)
+    async def qwencode_callback(
+        request: Request,
+        token: str | None = None,
+        access_token: str | None = None,
+        code: str | None = None,
+        state: str | None = None,
+        error: str | None = None,
+    ) -> HTMLResponse:
+        """Handle Qwen Code CLI OAuth callback."""
+        global _cached_qwencode_models, _qwencode_models_cache_time
+        
+        if error:
+            dashboard_state.qwencode_auth_status = AuthStatus.FAILED
+            await broadcast_update({"type": "qwencode_auth_failed", "error": error})
+            return HTMLResponse(content=get_qwencode_auth_result_html(False, error), status_code=400)
+        
+        received_token = token or access_token or code
+        if received_token:
+            dashboard_state.qwencode_access_token = received_token
+            dashboard_state.qwencode_token_expires_at = time.time() + 3600 * 24 * 30
+            dashboard_state.qwencode_auth_status = AuthStatus.AUTHENTICATED
+            
+            save_qwencode_credentials(
+                access_token=received_token,
+                expires_at=dashboard_state.qwencode_token_expires_at,
+            )
+            
+            os.environ["QWENCODE_ACCESS_TOKEN"] = received_token
+            _cached_qwencode_models = None
+            _qwencode_models_cache_time = 0
+            
+            await broadcast_update({
+                "type": "qwencode_auth_success",
+                "user_email": dashboard_state.qwencode_user_email,
+            })
+            
+            return HTMLResponse(content=get_qwencode_auth_result_html(True), status_code=200)
+        
+        return HTMLResponse(content=get_qwencode_auth_result_html(False, "No token received"), status_code=400)
+    
+    @app.post("/api/qwencode/logout")
+    async def qwencode_logout() -> dict[str, Any]:
+        """Log out from Qwen Code CLI."""
+        dashboard_state.qwencode_auth_status = AuthStatus.NOT_AUTHENTICATED
+        dashboard_state.qwencode_access_token = None
+        dashboard_state.qwencode_refresh_token = None
+        dashboard_state.qwencode_user_email = None
+        dashboard_state.qwencode_user_id = None
+        dashboard_state.qwencode_token_expires_at = None
+        dashboard_state.qwencode_api_endpoint = None
+        
+        if "QWENCODE_ACCESS_TOKEN" in os.environ:
+            del os.environ["QWENCODE_ACCESS_TOKEN"]
+        
+        if QWENCODE_CONFIG_FILE.exists():
+            try:
+                QWENCODE_CONFIG_FILE.unlink()
+            except OSError:
+                pass
+        
+        await broadcast_update({"type": "qwencode_auth_logout"})
+        return {"success": True, "message": "Logged out from Qwen Code CLI"}
+    
+    @app.post("/api/qwencode/set-token")
+    async def qwencode_set_token(request: Request) -> dict[str, Any]:
+        """Manually set Qwen Code CLI access token."""
+        global _cached_qwencode_models, _qwencode_models_cache_time
+        
+        try:
+            data = await request.json()
+            token = data.get("token")
+            api_endpoint = data.get("api_endpoint")
+            
+            if not token:
+                raise HTTPException(status_code=400, detail="Token is required")
+            
+            dashboard_state.qwencode_access_token = token
+            dashboard_state.qwencode_token_expires_at = time.time() + 3600 * 24 * 365
+            dashboard_state.qwencode_auth_status = AuthStatus.AUTHENTICATED
+            if api_endpoint:
+                dashboard_state.qwencode_api_endpoint = api_endpoint
+            
+            save_qwencode_credentials(
+                access_token=token,
+                expires_at=dashboard_state.qwencode_token_expires_at,
+                api_endpoint=api_endpoint,
+            )
+            
+            os.environ["QWENCODE_ACCESS_TOKEN"] = token
+            if api_endpoint:
+                os.environ["QWENCODE_API_BASE"] = api_endpoint
+            
+            _cached_qwencode_models = None
+            _qwencode_models_cache_time = 0
+            
+            await broadcast_update({"type": "qwencode_auth_success", "user_email": None})
+            return {"success": True, "message": "Qwen Code CLI token set successfully"}
+            
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+    
+    # =========================================================================
     # WebSocket Route
     # =========================================================================
     
@@ -1094,6 +1389,95 @@ def get_auth_result_html(success: bool, error: str | None = None) -> str:
         <p>Please try again or contact support if the issue persists.</p>
         <button class="btn" onclick="tryAgain()">Try Again</button>
         <button class="btn btn-secondary" onclick="goToDashboard()">Go to Dashboard</button>
+    </div>
+</body>
+</html>'''
+
+
+def get_qwencode_auth_result_html(success: bool, error: str | None = None) -> str:
+    """Generate HTML page for Qwen Code CLI auth callback result."""
+    if success:
+        return '''<!DOCTYPE html>
+<html>
+<head>
+    <title>Strix - Qwen Code Authentication Successful</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+               display: flex; justify-content: center; align-items: center; height: 100vh;
+               margin: 0; background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); }
+        .container { text-align: center; padding: 40px; background: rgba(255,255,255,0.1);
+                     border-radius: 16px; backdrop-filter: blur(10px); max-width: 400px; }
+        h1 { color: #6366f1; margin-bottom: 16px; }
+        p { color: #e5e5e5; margin: 10px 0; }
+        .icon { font-size: 64px; margin-bottom: 20px; }
+        .success { color: #6366f1; }
+        .btn { display: inline-block; margin-top: 20px; padding: 12px 24px;
+               background: #6366f1; color: #fff; text-decoration: none;
+               border-radius: 8px; font-weight: 600; cursor: pointer; }
+        .btn:hover { background: #4f46e5; }
+    </style>
+    <script>
+        (function() {
+            if (window.opener) {
+                try {
+                    window.opener.postMessage({ type: 'qwencode_auth_success' }, '*');
+                    setTimeout(() => window.close(), 1500);
+                } catch (e) {}
+            } else {
+                setTimeout(() => window.location.href = '/', 2000);
+            }
+        })();
+        function goToDashboard() { window.location.href = '/'; }
+    </script>
+</head>
+<body>
+    <div class="container">
+        <div class="icon">&#129302;</div>
+        <h1>Authentication Successful!</h1>
+        <p class="success">&#10003; Connected to Qwen Code CLI</p>
+        <p>2,000 free requests per day</p>
+        <button class="btn" onclick="goToDashboard()">Go to Dashboard</button>
+    </div>
+</body>
+</html>'''
+    else:
+        return f'''<!DOCTYPE html>
+<html>
+<head>
+    <title>Strix - Qwen Code Authentication Failed</title>
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+               display: flex; justify-content: center; align-items: center; height: 100vh;
+               margin: 0; background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); }}
+        .container {{ text-align: center; padding: 40px; background: rgba(255,255,255,0.1);
+                     border-radius: 16px; backdrop-filter: blur(10px); max-width: 400px; }}
+        h1 {{ color: #ef4444; margin-bottom: 16px; }}
+        p {{ color: #e5e5e5; margin: 10px 0; }}
+        .icon {{ font-size: 64px; margin-bottom: 20px; }}
+        .error {{ color: #fca5a5; background: rgba(239, 68, 68, 0.2);
+                 padding: 10px 15px; border-radius: 8px; margin: 15px 0; }}
+        .btn {{ display: inline-block; margin-top: 20px; padding: 12px 24px;
+               background: #3b82f6; color: #fff; text-decoration: none;
+               border-radius: 8px; font-weight: 600; cursor: pointer; }}
+        .btn:hover {{ background: #2563eb; }}
+    </style>
+    <script>
+        if (window.opener) {{
+            try {{
+                window.opener.postMessage({{ type: 'qwencode_auth_failed', error: '{error or "Unknown error"}' }}, '*');
+            }} catch (e) {{}}
+        }}
+        function tryAgain() {{ window.opener ? window.close() : window.location.href = '/'; }}
+        function goToDashboard() {{ window.location.href = '/'; }}
+    </script>
+</head>
+<body>
+    <div class="container">
+        <div class="icon">&#10060;</div>
+        <h1>Qwen Code Authentication Failed</h1>
+        <p class="error">{error or "Unknown error occurred"}</p>
+        <p>Please try again or contact support.</p>
+        <button class="btn" onclick="tryAgain()">Try Again</button>
     </div>
 </body>
 </html>'''
