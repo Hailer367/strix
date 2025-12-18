@@ -65,7 +65,14 @@ class BaseAgent(metaclass=AgentMeta):
         self.llm_config = config.get("llm_config", self.default_llm_config)
         if self.llm_config is None:
             raise ValueError("llm_config is required but not provided")
-        self.llm = LLM(self.llm_config, agent_name=self.agent_name)
+        
+        # Support for custom system prompts (used by create_custom_agent)
+        custom_system_prompt = config.get("custom_system_prompt")
+        self.llm = LLM(
+            self.llm_config,
+            agent_name=self.agent_name,
+            custom_system_prompt=custom_system_prompt,
+        )
 
         state_from_config = config.get("state")
         if state_from_config is not None:

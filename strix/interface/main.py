@@ -41,6 +41,7 @@ from strix.interface.utils import (
     validate_llm_response,
 )
 from strix.llm.roocode_provider import get_roocode_provider, ROOCODE_MODELS
+from strix.llm.qwencode_provider import get_qwencode_provider, QWENCODE_MODELS
 from strix.runtime.docker_runtime import STRIX_IMAGE
 from strix.telemetry.tracer import get_global_tracer
 
@@ -409,6 +410,40 @@ Examples:
         ),
     )
 
+    # Qwen Code CLI integration options
+    qwencode_group = parser.add_argument_group("Qwen Code CLI Options")
+    qwencode_group.add_argument(
+        "--qwencode",
+        action="store_true",
+        help=(
+            "Use Qwen Code CLI for AI models (2,000 free requests/day). "
+            "Authenticates via browser OAuth with qwen.ai or uses API key."
+        ),
+    )
+    qwencode_group.add_argument(
+        "--qwencode-login",
+        action="store_true",
+        help="Authenticate with Qwen Code CLI and exit.",
+    )
+    qwencode_group.add_argument(
+        "--qwencode-logout",
+        action="store_true",
+        help="Log out from Qwen Code CLI and exit.",
+    )
+    qwencode_group.add_argument(
+        "--qwencode-model",
+        type=str,
+        choices=list(QWENCODE_MODELS.keys()),
+        default="qwen3-coder-plus",
+        help=(
+            "Qwen Code model to use. Options: "
+            "qwen3-coder-plus (advanced), "
+            "qwen3-coder-plus-latest (latest version), "
+            "qwen/qwen3-coder:free (OpenRouter free tier). "
+            "Default: qwen3-coder-plus"
+        ),
+    )
+
     # Root access options
     access_group = parser.add_argument_group("Access Control Options")
     access_group.add_argument(
@@ -607,12 +642,41 @@ def main() -> None:
         console.print("[bold green]✅ Logged out from Roo Code Cloud[/]")
         sys.exit(0)
 
+    # Handle Qwen Code CLI authentication commands
+    if args.qwencode_login:
+        provider = get_qwencode_provider()
+        console.print("\n[bold cyan]🤖 Authenticating with Qwen Code CLI...[/]\n")
+        if provider.login():
+            console.print("[bold green]✅ Successfully logged in to Qwen Code CLI![/]")
+            user_info = provider.get_user_info()
+            if user_info and user_info.get("email"):
+                console.print(f"   Logged in as: {user_info['email']}")
+            console.print("   You have 2,000 free requests per day!")
+        else:
+            console.print("[bold red]❌ Failed to log in to Qwen Code CLI[/]")
+            console.print("   Tip: Set QWENCODE_API_KEY environment variable for API key auth.")
+            sys.exit(1)
+        sys.exit(0)
+
+    if args.qwencode_logout:
+        provider = get_qwencode_provider()
+        provider.logout()
+        console.print("[bold green]✅ Logged out from Qwen Code CLI[/]")
+        sys.exit(0)
+
     # Configure Roo Code if requested
     use_roocode = args.roocode or os.getenv("STRIX_USE_ROOCODE", "").lower() == "true"
+    use_qwencode = args.qwencode or os.getenv("STRIX_USE_QWENCODE", "").lower() == "true"
+    
     if use_roocode:
         os.environ["STRIX_USE_ROOCODE"] = "true"
         os.environ["STRIX_LLM"] = f"roocode/{args.roocode_model}"
         console.print(f"\n[bold cyan]🦉 Using Roo Code Cloud model: {args.roocode_model}[/]\n")
+    elif use_qwencode:
+        os.environ["STRIX_USE_QWENCODE"] = "true"
+        os.environ["STRIX_LLM"] = f"qwencode/{args.qwencode_model}"
+        console.print(f"\n[bold cyan]🤖 Using Qwen Code CLI model: {args.qwencode_model}[/]")
+        console.print("   (2,000 free requests/day)\n")
 
     # Configure root access if requested
     if args.root_access or args.access_level == "root":

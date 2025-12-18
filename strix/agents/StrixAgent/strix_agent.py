@@ -15,6 +15,11 @@ class StrixAgent(BaseAgent):
             default_modules = ["root_agent"]
 
         self.default_llm_config = LLMConfig(prompt_modules=default_modules)
+        
+        # Support for custom system prompts (used by create_custom_agent)
+        self.custom_system_prompt = config.get("custom_system_prompt")
+        self.enable_root_terminal = config.get("enable_root_terminal", False)
+        self.allowed_tools = config.get("allowed_tools")
 
         super().__init__(config)
 

@@ -576,6 +576,270 @@ def send_user_message_to_agent(agent_id: str, message: str) -> dict[str, Any]:
 
 
 @register_tool(sandbox_execution=False)
+def create_custom_agent(
+    agent_state: Any,
+    task: str,
+    name: str,
+    custom_system_prompt: str,
+    inherit_context: bool = False,
+    max_iterations: int = 100,
+    enable_root_terminal: bool = True,
+    allowed_tools: str | None = None,
+) -> dict[str, Any]:
+    """
+    Create a fully custom sub-agent with root terminal access and custom system prompt.
+    
+    This tool allows the main AI agent to create specialized sub-agents with:
+    - Custom system prompts for specific tasks
+    - Root-accessed terminal for unrestricted command execution
+    - Configurable tool access
+    - Independent execution within the shared sandbox environment
+    
+    The custom agent can:
+    - Install any tools, libraries, databases via apt, pip, npm, go install, etc.
+    - Modify system configurations as needed
+    - Execute privileged commands without restrictions
+    - Access shared /workspace directory and proxy history
+    
+    Args:
+        task: The specific task for this agent to complete
+        name: A descriptive name for this agent
+        custom_system_prompt: Custom system prompt defining the agent's behavior and capabilities
+        inherit_context: Whether to inherit parent's conversation context (default: False for clean slate)
+        max_iterations: Maximum iterations for this agent (default: 100, max: 300)
+        enable_root_terminal: Enable root terminal access (default: True)
+        allowed_tools: Comma-separated list of allowed tools (default: all tools)
+    
+    Returns:
+        Agent creation result with agent_id and status
+    
+    Note:
+        - Sub-agents share the same container but have independent tool server instances
+        - The custom system prompt completely replaces the default prompt
+        - Root terminal allows FULL unrestricted access within the sandbox
+        - Use this for specialized tasks that require custom behaviors
+        - Not suitable for tasks that are too complex or long-running (use regular create_agent instead)
+    """
+    import os
+    
+    try:
+        parent_id = agent_state.agent_id
+        
+        # Validate max_iterations
+        if max_iterations < 1:
+            max_iterations = 1
+        elif max_iterations > 300:
+            max_iterations = 300
+        
+        # Parse allowed tools if specified
+        tool_list = None
+        if allowed_tools:
+            tool_list = [t.strip() for t in allowed_tools.split(",") if t.strip()]
+        
+        from strix.agents import StrixAgent
+        from strix.agents.state import AgentState
+        from strix.llm.config import LLMConfig
+        
+        state = AgentState(
+            task=task,
+            agent_name=name,
+            parent_id=parent_id,
+            max_iterations=max_iterations,
+        )
+        
+        parent_agent = _agent_instances.get(parent_id)
+        
+        timeout = None
+        if (
+            parent_agent
+            and hasattr(parent_agent, "llm_config")
+            and hasattr(parent_agent.llm_config, "timeout")
+        ):
+            timeout = parent_agent.llm_config.timeout
+        
+        # Create LLM config without default modules (custom prompt will be used)
+        llm_config = LLMConfig(prompt_modules=[], timeout=timeout)
+        
+        agent_config = {
+            "llm_config": llm_config,
+            "state": state,
+            "custom_system_prompt": custom_system_prompt,
+            "enable_root_terminal": enable_root_terminal,
+            "allowed_tools": tool_list,
+        }
+        if parent_agent and hasattr(parent_agent, "non_interactive"):
+            agent_config["non_interactive"] = parent_agent.non_interactive
+        
+        # Set root access environment variables for the agent
+        if enable_root_terminal:
+            os.environ["STRIX_ROOT_ACCESS"] = "true"
+            os.environ["STRIX_ACCESS_LEVEL"] = "root"
+        
+        agent = StrixAgent(agent_config)
+        
+        inherited_messages = []
+        if inherit_context:
+            inherited_messages = agent_state.get_conversation_history()
+        
+        _agent_instances[state.agent_id] = agent
+        
+        # Record in agent graph with custom agent type
+        _agent_graph["nodes"][state.agent_id] = {
+            "id": state.agent_id,
+            "name": name,
+            "task": task,
+            "status": "running",
+            "parent_id": parent_id,
+            "agent_type": "custom",
+            "has_root_terminal": enable_root_terminal,
+            "max_iterations": max_iterations,
+            "created_at": datetime.now(UTC).isoformat(),
+            "finished_at": None,
+            "result": None,
+        }
+        
+        # Add delegation edge
+        _agent_graph["edges"].append({
+            "from": parent_id,
+            "to": state.agent_id,
+            "type": "delegation",
+            "created_at": datetime.now(UTC).isoformat(),
+        })
+        
+        thread = threading.Thread(
+            target=_run_custom_agent_in_thread,
+            args=(agent, state, inherited_messages, custom_system_prompt, enable_root_terminal),
+            daemon=True,
+            name=f"CustomAgent-{name}-{state.agent_id}",
+        )
+        thread.start()
+        _running_agents[state.agent_id] = thread
+        
+    except Exception as e:  # noqa: BLE001
+        return {
+            "success": False,
+            "error": f"Failed to create custom agent: {e}",
+            "agent_id": None,
+        }
+    else:
+        return {
+            "success": True,
+            "agent_id": state.agent_id,
+            "message": f"Custom agent '{name}' created with root terminal access",
+            "agent_info": {
+                "id": state.agent_id,
+                "name": name,
+                "status": "running",
+                "parent_id": parent_id,
+                "agent_type": "custom",
+                "has_root_terminal": enable_root_terminal,
+                "max_iterations": max_iterations,
+            },
+            "capabilities": {
+                "root_terminal": enable_root_terminal,
+                "can_install_packages": enable_root_terminal,
+                "can_modify_system": enable_root_terminal,
+                "custom_prompt": True,
+            },
+        }
+
+
+def _run_custom_agent_in_thread(
+    agent: Any,
+    state: Any,
+    inherited_messages: list[dict[str, Any]],
+    custom_system_prompt: str,
+    enable_root_terminal: bool,
+) -> dict[str, Any]:
+    """Run a custom agent in a separate thread."""
+    try:
+        if inherited_messages:
+            state.add_message("user", "<inherited_context_from_parent>")
+            for msg in inherited_messages:
+                state.add_message(msg["role"], msg["content"])
+            state.add_message("user", "</inherited_context_from_parent>")
+        
+        parent_info = _agent_graph["nodes"].get(state.parent_id, {})
+        parent_name = parent_info.get("name", "Unknown Parent")
+        
+        root_access_info = ""
+        if enable_root_terminal:
+            root_access_info = """
+    <root_terminal_access>
+        You have FULL ROOT ACCESS to the terminal. You can:
+        - Install ANY tools/packages: apt-get install, pip install, npm install, go install
+        - Download and set up custom tools from GitHub or any source
+        - Modify system configurations as needed
+        - Execute any privileged commands without restrictions
+        - Create, modify, and manage databases
+        - Configure network settings
+        - Compile and install software from source
+        
+        The sandbox is isolated - you cannot harm the host system. USE YOUR FULL CAPABILITIES!
+    </root_terminal_access>"""
+        
+        context_status = (
+            "inherited conversation context from your parent"
+            if inherited_messages
+            else "started with a fresh context"
+        )
+        
+        task_xml = f"""<custom_agent_delegation>
+    <identity>
+        You are a CUSTOM SUB-AGENT with specialized capabilities.
+        
+        Your Info: {state.agent_name} ({state.agent_id})
+        Parent Info: {parent_name} ({state.parent_id})
+    </identity>
+
+    <your_task>{state.task}</your_task>
+    {root_access_info}
+    <instructions>
+        - You have {context_status}
+        - Your system prompt has been customized for your specific task
+        - Focus EXCLUSIVELY on your delegated task
+        - Work independently with full autonomy
+        - Use agent_finish when complete to report back to parent
+        - You share /workspace directory and proxy history with other agents
+        - Build upon previous work but focus on your specific task
+    </instructions>
+</custom_agent_delegation>"""
+        
+        state.add_message("user", task_xml)
+        
+        _agent_states[state.agent_id] = state
+        _agent_graph["nodes"][state.agent_id]["state"] = state.model_dump()
+        
+        import asyncio
+        
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            result = loop.run_until_complete(agent.agent_loop(state.task))
+        finally:
+            loop.close()
+        
+    except Exception as e:
+        _agent_graph["nodes"][state.agent_id]["status"] = "error"
+        _agent_graph["nodes"][state.agent_id]["finished_at"] = datetime.now(UTC).isoformat()
+        _agent_graph["nodes"][state.agent_id]["result"] = {"error": str(e)}
+        _running_agents.pop(state.agent_id, None)
+        _agent_instances.pop(state.agent_id, None)
+        raise
+    else:
+        if state.stop_requested:
+            _agent_graph["nodes"][state.agent_id]["status"] = "stopped"
+        else:
+            _agent_graph["nodes"][state.agent_id]["status"] = "completed"
+        _agent_graph["nodes"][state.agent_id]["finished_at"] = datetime.now(UTC).isoformat()
+        _agent_graph["nodes"][state.agent_id]["result"] = result
+        _running_agents.pop(state.agent_id, None)
+        _agent_instances.pop(state.agent_id, None)
+        
+        return {"result": result}
+
+
+@register_tool(sandbox_execution=False)
 def wait_for_message(
     agent_state: Any,
     reason: str = "Waiting for messages from other agents",
