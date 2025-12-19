@@ -1,14 +1,26 @@
 #!/usr/bin/env python3
 """
-Strix Agent Interface
+Strix Agent Interface - GitHub Actions Edition
 
-A powerful AI-driven penetration testing and bug bounty automation agent.
+A powerful AI-driven penetration testing and bug bounty automation agent
+designed for GitHub Actions CI/CD workflows.
 
-Features:
-- Roo Code Cloud integration for free AI model usage
-- Root access mode for unrestricted terminal commands
-- Multi-target scanning capabilities
-- Real-time vulnerability detection
+This tool is optimized for:
+- Running as a GitHub Actions workflow
+- Web dashboard configuration via Cloudflare tunnel
+- Autonomous long-running security scans
+- Integration with Roo Code Cloud and Qwen Code CLI for free AI models
+
+Local Usage:
+  While this tool is designed for GitHub Actions, you can run it locally
+  for testing with: strix --target <url>
+  
+GitHub Actions Usage:
+  1. Configure the workflow in .github/workflows/strix-dashboard.yml
+  2. Add ROOCODE_ACCESS_TOKEN to repository secrets (optional)
+  3. Run the workflow from GitHub Actions tab
+  4. Access the dashboard via the Cloudflare tunnel URL
+  5. Configure scan parameters and click "Configure and Fire"
 """
 
 import argparse
@@ -48,57 +60,103 @@ from strix.telemetry.tracer import get_global_tracer
 
 logging.getLogger().setLevel(logging.ERROR)
 
+# GitHub Actions environment detection
+IS_GITHUB_ACTIONS = os.getenv("GITHUB_ACTIONS", "").lower() == "true"
+GITHUB_REPOSITORY = os.getenv("GITHUB_REPOSITORY", "")
+GITHUB_RUN_ID = os.getenv("GITHUB_RUN_ID", "")
+GITHUB_WORKFLOW = os.getenv("GITHUB_WORKFLOW", "")
 
-def validate_environment(use_roocode: bool = False) -> None:  # noqa: PLR0912, PLR0915
+
+def is_github_actions() -> bool:
+    """Check if running in GitHub Actions environment."""
+    return IS_GITHUB_ACTIONS
+
+
+def validate_environment(use_roocode: bool = False, use_qwencode: bool = False) -> None:  # noqa: PLR0912, PLR0915
     console = Console()
     missing_required_vars = []
     missing_optional_vars = []
 
-    # Check if using Roo Code provider
+    # Check if using Roo Code or Qwen Code provider
     strix_llm = os.getenv("STRIX_LLM", "")
     is_roocode = use_roocode or strix_llm.startswith("roocode/")
+    is_qwencode = use_qwencode or strix_llm.startswith("qwencode/")
 
     if is_roocode:
         # Roo Code mode - no API keys required
         provider = get_roocode_provider()
         if not provider.is_authenticated():
-            # Need to authenticate
-            console.print()
-            console.print("[bold cyan]🦉 Roo Code Cloud Authentication Required[/]")
-            console.print()
-
-            if not provider.login():
-                error_text = Text()
-                error_text.append("❌ ", style="bold red")
-                error_text.append("ROO CODE AUTHENTICATION FAILED", style="bold red")
-                error_text.append("\n\n", style="white")
-                error_text.append(
-                    "Could not authenticate with Roo Code Cloud.\n", style="white"
-                )
-                error_text.append(
-                    "Please try again or set ROOCODE_ACCESS_TOKEN manually.\n", style="white"
-                )
-
-                panel = Panel(
-                    error_text,
-                    title="[bold red]🛡️  STRIX AUTHENTICATION ERROR",
-                    title_align="center",
-                    border_style="red",
-                    padding=(1, 2),
-                )
-                console.print("\n")
-                console.print(panel)
+            # In GitHub Actions, check for environment token first
+            env_token = os.getenv("ROOCODE_ACCESS_TOKEN")
+            if env_token:
+                # Token available from environment (GitHub Actions secret)
+                console.print("[bold green]✅ Using Roo Code token from environment[/]")
+                os.environ["ROOCODE_ACCESS_TOKEN"] = env_token
+            else:
+                # Need to authenticate interactively
                 console.print()
-                sys.exit(1)
+                console.print("[bold cyan]🦉 Roo Code Cloud Authentication Required[/]")
+                console.print()
 
-            console.print("[bold green]✅ Successfully authenticated with Roo Code Cloud[/]")
-            console.print()
+                if IS_GITHUB_ACTIONS:
+                    # In GitHub Actions, we rely on the dashboard for auth
+                    console.print("[bold yellow]⚠️  Please authenticate via the dashboard[/]")
+                    console.print("   Open the dashboard URL and log in with Roo Code Cloud")
+                    return
+
+                if not provider.login():
+                    error_text = Text()
+                    error_text.append("❌ ", style="bold red")
+                    error_text.append("ROO CODE AUTHENTICATION FAILED", style="bold red")
+                    error_text.append("\n\n", style="white")
+                    error_text.append(
+                        "Could not authenticate with Roo Code Cloud.\n", style="white"
+                    )
+                    error_text.append(
+                        "Please try again or set ROOCODE_ACCESS_TOKEN manually.\n", style="white"
+                    )
+
+                    panel = Panel(
+                        error_text,
+                        title="[bold red]🛡️  STRIX AUTHENTICATION ERROR",
+                        title_align="center",
+                        border_style="red",
+                        padding=(1, 2),
+                    )
+                    console.print("\n")
+                    console.print(panel)
+                    console.print()
+                    sys.exit(1)
+
+                console.print("[bold green]✅ Successfully authenticated with Roo Code Cloud[/]")
+                console.print()
 
         # Set default model if not specified
         if not strix_llm:
             os.environ["STRIX_LLM"] = "roocode/grok-code-fast-1"
 
         # Skip API key validation for Roo Code
+        return
+
+    if is_qwencode:
+        # Qwen Code mode - check for API key or OAuth
+        provider = get_qwencode_provider()
+        if not provider.is_authenticated():
+            env_token = os.getenv("QWENCODE_ACCESS_TOKEN") or os.getenv("QWENCODE_API_KEY")
+            if env_token:
+                console.print("[bold green]✅ Using Qwen Code token from environment[/]")
+            else:
+                if IS_GITHUB_ACTIONS:
+                    console.print("[bold yellow]⚠️  Please authenticate via the dashboard[/]")
+                    return
+                
+                if not provider.login():
+                    console.print("[bold red]❌ Qwen Code authentication failed[/]")
+                    sys.exit(1)
+                console.print("[bold green]✅ Authenticated with Qwen Code CLI[/]")
+        
+        if not strix_llm:
+            os.environ["STRIX_LLM"] = "qwencode/qwen3-coder-plus"
         return
 
     # Standard mode - check for API configuration
@@ -175,6 +233,13 @@ def validate_environment(use_roocode: bool = False) -> None:  # noqa: PLR0912, P
                         style="white",
                     )
 
+        error_text.append("\n📍 GitHub Actions Tip:\n", style="bold cyan")
+        error_text.append(
+            "For GitHub Actions, use --roocode flag for free AI models,\n"
+            "or add ROOCODE_ACCESS_TOKEN to your repository secrets.\n",
+            style="white"
+        )
+        
         error_text.append("\nExample setup:\n", style="white")
         error_text.append("export STRIX_LLM='openai/gpt-5'\n", style="dim white")
 
@@ -222,6 +287,10 @@ def check_docker_installed() -> None:
         error_text.append(
             "Please install Docker and ensure the 'docker' command is available.\n\n", style="white"
         )
+        
+        if IS_GITHUB_ACTIONS:
+            error_text.append("⚠️  Docker should be pre-installed on GitHub runners.\n", style="yellow")
+            error_text.append("Try running: sudo systemctl start docker\n", style="dim white")
 
         panel = Panel(
             error_text,
@@ -293,43 +362,47 @@ async def warm_up_llm() -> None:
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Strix Multi-Agent Cybersecurity Penetration Testing Tool",
+        description="Strix Multi-Agent Cybersecurity Penetration Testing Tool (GitHub Actions Edition)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Examples:
-  # Web application penetration test
-  strix --target https://example.com
-
-  # GitHub repository analysis
-  strix --target https://github.com/user/repo
-  strix --target git@github.com:user/repo.git
-
-  # Local code analysis
-  strix --target ./my-project
-
-  # Domain penetration test
-  strix --target example.com
-
-  # IP address penetration test
-  strix --target 192.168.1.42
-
-  # Multiple targets (e.g., white-box testing with source and deployed app)
-  strix --target https://github.com/user/repo --target https://example.com
-  strix --target ./my-project --target https://staging.example.com --target https://prod.example.com
-
-  # Custom instructions (inline)
-  strix --target example.com --instruction "Focus on authentication vulnerabilities"
-
-  # Custom instructions (from file)
-  strix --target example.com --instruction-file ./instructions.txt
-  strix --target https://app.com --instruction-file /path/to/detailed_instructions.md
-
-  # Use Roo Code Cloud for free AI models
-  strix --roocode --target https://example.com
-  strix --roocode-model grok-code-fast-1 --target ./my-app
-
-  # Enable root access for unrestricted tool installation
-  strix --root-access --target https://example.com
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                     🦉 STRIX - GITHUB ACTIONS EDITION                       ║
+╠═══════════════════════════════════════════════════════════════════════════╣
+║                                                                           ║
+║  This tool is designed for GitHub Actions CI/CD workflows.                ║
+║  The recommended way to use Strix is through the web dashboard.           ║
+║                                                                           ║
+║  GITHUB ACTIONS SETUP:                                                    ║
+║  1. Go to your repository's Actions tab                                   ║
+║  2. Run the "Strix Autonomous Dashboard" workflow                         ║
+║  3. Click the Cloudflare tunnel URL in the workflow output                ║
+║  4. Configure your scan in the web dashboard                              ║
+║  5. Click "Configure and Fire" to start                                   ║
+║                                                                           ║
+╠═══════════════════════════════════════════════════════════════════════════╣
+║  LOCAL TESTING (for development):                                         ║
+╠═══════════════════════════════════════════════════════════════════════════╣
+║                                                                           ║
+║  # Use Roo Code Cloud (free, recommended):                                ║
+║  strix --roocode --target https://example.com                             ║
+║                                                                           ║
+║  # Use Qwen Code CLI (2,000 free requests/day):                           ║
+║  strix --qwencode --target https://example.com                            ║
+║                                                                           ║
+║  # Multiple targets (white-box testing):                                  ║
+║  strix --roocode --target ./my-repo --target https://example.com          ║
+║                                                                           ║
+║  # Enable root access for tool installation:                              ║
+║  strix --roocode --root-access --target https://example.com               ║
+║                                                                           ║
+╠═══════════════════════════════════════════════════════════════════════════╣
+║  DASHBOARD MODE (local):                                                  ║
+╠═══════════════════════════════════════════════════════════════════════════╣
+║                                                                           ║
+║  Start the dashboard locally:                                             ║
+║  python -m strix.dashboard.server --port 8080                             ║
+║                                                                           ║
+╚═══════════════════════════════════════════════════════════════════════════╝
         """,
     )
 
@@ -371,20 +444,22 @@ Examples:
         "-n",
         "--non-interactive",
         action="store_true",
+        default=IS_GITHUB_ACTIONS,  # Default to non-interactive in GitHub Actions
         help=(
             "Run in non-interactive mode (no TUI, exits on completion). "
-            "Default is interactive mode with TUI."
+            "Automatically enabled in GitHub Actions environment."
         ),
     )
 
     # Roo Code Cloud integration options
-    roocode_group = parser.add_argument_group("Roo Code Cloud Options")
+    roocode_group = parser.add_argument_group("Roo Code Cloud Options (Recommended)")
     roocode_group.add_argument(
         "--roocode",
         action="store_true",
+        default=os.getenv("STRIX_USE_ROOCODE", "").lower() == "true",
         help=(
             "Use Roo Code Cloud for AI models (free, no API keys required). "
-            "Automatically authenticates via browser OAuth."
+            "Automatically authenticates via browser OAuth or environment token."
         ),
     )
     roocode_group.add_argument(
@@ -400,7 +475,7 @@ Examples:
     roocode_group.add_argument(
         "--roocode-model",
         type=str,
-        choices=list(ROOCODE_MODELS.keys()),
+        choices=list(ROOCODE_MODELS.keys()) if ROOCODE_MODELS else None,
         default="grok-code-fast-1",
         help=(
             "Roo Code model to use. Options: "
@@ -415,6 +490,7 @@ Examples:
     qwencode_group.add_argument(
         "--qwencode",
         action="store_true",
+        default=os.getenv("STRIX_USE_QWENCODE", "").lower() == "true",
         help=(
             "Use Qwen Code CLI for AI models (2,000 free requests/day). "
             "Authenticates via browser OAuth with qwen.ai or uses API key."
@@ -433,13 +509,12 @@ Examples:
     qwencode_group.add_argument(
         "--qwencode-model",
         type=str,
-        choices=list(QWENCODE_MODELS.keys()),
+        choices=list(QWENCODE_MODELS.keys()) if QWENCODE_MODELS else None,
         default="qwen3-coder-plus",
         help=(
             "Qwen Code model to use. Options: "
             "qwen3-coder-plus (advanced), "
-            "qwen3-coder-plus-latest (latest version), "
-            "qwen/qwen3-coder:free (OpenRouter free tier). "
+            "qwen3-coder (balanced). "
             "Default: qwen3-coder-plus"
         ),
     )
@@ -449,6 +524,7 @@ Examples:
     access_group.add_argument(
         "--root-access",
         action="store_true",
+        default=os.getenv("STRIX_ROOT_ACCESS", "").lower() == "true",
         help=(
             "Enable root access mode for unrestricted terminal commands. "
             "Allows the AI agent to install tools, modify system settings, "
@@ -459,13 +535,33 @@ Examples:
         "--access-level",
         type=str,
         choices=["standard", "elevated", "root"],
-        default="standard",
+        default=os.getenv("STRIX_ACCESS_LEVEL", "standard"),
         help=(
             "Set the access level for terminal commands. "
             "standard: Normal user access (default), "
             "elevated: Can use sudo for specific commands, "
             "root: Full unrestricted access."
         ),
+    )
+
+    # GitHub Actions specific options
+    ga_group = parser.add_argument_group("GitHub Actions Options")
+    ga_group.add_argument(
+        "--github-actions",
+        action="store_true",
+        default=IS_GITHUB_ACTIONS,
+        help="Explicitly enable GitHub Actions mode (auto-detected from environment).",
+    )
+    ga_group.add_argument(
+        "--dashboard-mode",
+        action="store_true",
+        help="Start the web dashboard server instead of running a scan.",
+    )
+    ga_group.add_argument(
+        "--dashboard-port",
+        type=int,
+        default=int(os.getenv("STRIX_DASHBOARD_PORT", "8080")),
+        help="Port for the dashboard server (default: 8080).",
     )
 
     args = parser.parse_args()
@@ -551,6 +647,15 @@ def display_completion_message(args: argparse.Namespace, results_path: Path) -> 
         results_text.append("📊 Results Saved To: ", style="bold cyan")
         results_text.append(str(results_path), style="bold yellow")
         panel_parts.extend(["\n\n", results_text])
+        
+    # Add GitHub Actions specific info
+    if IS_GITHUB_ACTIONS:
+        ga_text = Text()
+        ga_text.append("\n\n📍 GitHub Actions: ", style="bold cyan")
+        ga_text.append(f"Run {GITHUB_RUN_ID}", style="white")
+        if GITHUB_REPOSITORY:
+            ga_text.append(f" in {GITHUB_REPOSITORY}", style="dim white")
+        panel_parts.append(ga_text)
 
     panel_content = Text.assemble(*panel_parts)
 
@@ -615,12 +720,33 @@ def pull_docker_image() -> None:
     console.print()
 
 
+def run_dashboard_server(port: int = 8080) -> None:
+    """Start the web dashboard server."""
+    from strix.dashboard.server import run_dashboard
+    run_dashboard(host="0.0.0.0", port=port)
+
+
 def main() -> None:
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
     args = parse_arguments()
     console = Console()
+    
+    # Display GitHub Actions notice
+    if IS_GITHUB_ACTIONS:
+        console.print()
+        console.print("[bold cyan]🦉 STRIX - GitHub Actions Mode[/]")
+        console.print(f"[dim]Repository: {GITHUB_REPOSITORY}[/]")
+        console.print(f"[dim]Workflow: {GITHUB_WORKFLOW}[/]")
+        console.print(f"[dim]Run ID: {GITHUB_RUN_ID}[/]")
+        console.print()
+
+    # Handle dashboard mode
+    if args.dashboard_mode:
+        console.print(f"\n[bold cyan]🌐 Starting Strix Dashboard on port {args.dashboard_port}...[/]\n")
+        run_dashboard_server(args.dashboard_port)
+        return
 
     # Handle Roo Code authentication commands
     if args.roocode_login:
@@ -691,11 +817,13 @@ def main() -> None:
     check_docker_installed()
     pull_docker_image()
 
-    validate_environment(use_roocode=use_roocode)
+    validate_environment(use_roocode=use_roocode, use_qwencode=use_qwencode)
     asyncio.run(warm_up_llm())
 
     if not args.run_name:
         args.run_name = generate_run_name(args.targets_info)
+        if IS_GITHUB_ACTIONS and GITHUB_RUN_ID:
+            args.run_name = f"github-{GITHUB_RUN_ID}-{args.run_name}"
 
     for target_info in args.targets_info:
         if target_info["type"] == "repository":

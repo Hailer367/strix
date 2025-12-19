@@ -3,14 +3,24 @@ Dashboard Configuration Models
 
 Pydantic models for dashboard configuration and scan parameters.
 Enhanced with comprehensive Strix agent configuration options.
+
+Designed for GitHub Actions CI/CD workflows with web dashboard interface.
 """
 
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, Field
+
+
+# GitHub Actions environment detection
+IS_GITHUB_ACTIONS = os.getenv("GITHUB_ACTIONS", "").lower() == "true"
+GITHUB_REPOSITORY = os.getenv("GITHUB_REPOSITORY", "")
+GITHUB_RUN_ID = os.getenv("GITHUB_RUN_ID", "")
+GITHUB_WORKFLOW = os.getenv("GITHUB_WORKFLOW", "")
 
 
 class AIProvider(str, Enum):
@@ -38,6 +48,7 @@ class ScanStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    PAUSED = "paused"
 
 
 class AuthStatus(str, Enum):
@@ -47,6 +58,13 @@ class AuthStatus(str, Enum):
     AUTHENTICATED = "authenticated"
     EXPIRED = "expired"
     FAILED = "failed"
+
+
+class ScanMode(str, Enum):
+    """Scan operation modes."""
+    BLACK_BOX = "black_box"  # External testing only
+    WHITE_BOX = "white_box"  # Source code + external testing
+    COMBINED = "combined"    # Full scope testing
 
 
 class RooCodeConfig(BaseModel):
@@ -115,7 +133,7 @@ class TestingConfig(BaseModel):
     credentials: dict[str, str] = Field(default_factory=dict)
     max_iterations: int = 300
     duration_minutes: int = 60
-    # New agent configuration options
+    # Agent configuration options
     enable_multi_agent: bool = True
     max_sub_agents: int = 5
     enable_browser_automation: bool = True
@@ -124,6 +142,8 @@ class TestingConfig(BaseModel):
     aggressive_mode: bool = False
     stealth_mode: bool = False
     rate_limit_rps: int = 10
+    # Scan mode
+    scan_mode: ScanMode = ScanMode.BLACK_BOX
 
 
 class OutputConfig(BaseModel):
@@ -162,6 +182,20 @@ class AgentBehaviorConfig(BaseModel):
     stop_on_critical: bool = False
 
 
+class GitHubActionsConfig(BaseModel):
+    """GitHub Actions specific configuration."""
+    is_github_actions: bool = IS_GITHUB_ACTIONS
+    repository: str = GITHUB_REPOSITORY
+    run_id: str = GITHUB_RUN_ID
+    workflow: str = GITHUB_WORKFLOW
+    # Artifact upload
+    upload_artifacts: bool = True
+    artifact_retention_days: int = 30
+    # Notification
+    create_issue_on_critical: bool = False
+    notify_on_completion: bool = True
+
+
 class ScanConfig(BaseModel):
     """Complete scan configuration."""
     ai: AIConfig = Field(default_factory=AIConfig)
@@ -170,6 +204,7 @@ class ScanConfig(BaseModel):
     testing: TestingConfig = Field(default_factory=TestingConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
     behavior: AgentBehaviorConfig = Field(default_factory=AgentBehaviorConfig)
+    github_actions: GitHubActionsConfig = Field(default_factory=GitHubActionsConfig)
     
     # Metadata
     run_id: str | None = None
@@ -210,6 +245,9 @@ class DashboardConfig:
     qwencode_auth_url: str = "https://chat.qwen.ai"
     qwencode_api_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     qwencode_auth_callback_port: int = 18766
+    
+    # GitHub Actions integration
+    is_github_actions: bool = IS_GITHUB_ACTIONS
 
 
 @dataclass
@@ -244,6 +282,16 @@ class DashboardState:
     # OAuth callback state
     oauth_state: str | None = None
     oauth_code_verifier: str | None = None
+    
+    # GitHub Actions context
+    github_run_id: str = GITHUB_RUN_ID
+    github_repository: str = GITHUB_REPOSITORY
+    
+    # Scan metrics
+    vulnerabilities_found: int = 0
+    endpoints_tested: int = 0
+    requests_made: int = 0
+    time_elapsed_seconds: int = 0
 
 
 # Default vulnerability focus areas
@@ -271,6 +319,31 @@ DEFAULT_FOCUS_AREAS = [
 ]
 
 
+# Focus area descriptions for the dashboard
+FOCUS_AREA_DESCRIPTIONS = {
+    "sqli": "SQL Injection - Database query manipulation",
+    "xss": "Cross-Site Scripting - Script injection in browsers",
+    "xxe": "XML External Entity - XML parser exploitation",
+    "ssrf": "Server-Side Request Forgery - Internal network access",
+    "idor": "Insecure Direct Object Reference - Authorization bypass",
+    "auth_bypass": "Authentication Bypass - Login circumvention",
+    "rce": "Remote Code Execution - Server-side code execution",
+    "lfi": "Local File Inclusion - Server file access",
+    "rfi": "Remote File Inclusion - Remote file execution",
+    "csrf": "Cross-Site Request Forgery - Action hijacking",
+    "ssti": "Server-Side Template Injection - Template exploitation",
+    "deserialization": "Insecure Deserialization - Object injection",
+    "business_logic": "Business Logic Flaws - Process manipulation",
+    "info_disclosure": "Information Disclosure - Sensitive data exposure",
+    "misconfig": "Security Misconfiguration - System hardening issues",
+    "broken_access": "Broken Access Control - Permission bypass",
+    "crypto_failures": "Cryptographic Failures - Weak encryption",
+    "injection": "Other Injection - Command, LDAP, etc.",
+    "security_headers": "Missing Security Headers - Browser protections",
+    "api_security": "API Security Issues - REST/GraphQL vulnerabilities",
+}
+
+
 # Fallback Roo Code models - used ONLY when API is unavailable
 # These models should match the official Roo Code Cloud models from:
 # https://docs.roocode.com/providers/roo-code-cloud
@@ -279,42 +352,6 @@ DEFAULT_FOCUS_AREAS = [
 ROOCODE_MODELS: dict = {
     # Empty by default - models should be fetched from API after authentication
     # This ensures we don't show outdated/incorrect models to users
-}
-
-
-# Qwen Code CLI models - fallback when API is unavailable
-# Reference: https://github.com/QwenLM/qwen-code
-QWENCODE_MODELS: dict = {
-    "qwen3-coder-plus": {
-        "name": "qwen3-coder-plus",
-        "display_name": "Qwen3 Coder Plus",
-        "description": "Advanced Qwen3 coding model with enhanced capabilities (2,000 free requests/day)",
-        "context_window": 131072,
-        "free": True,
-        "provider": "qwencode",
-        "capabilities": ["code", "chat", "analysis"],
-        "speed": "fast",
-    },
-    "qwen3-coder-plus-latest": {
-        "name": "qwen3-coder-plus-latest",
-        "display_name": "Qwen3 Coder Plus (Latest)",
-        "description": "Latest version of Qwen3 coding model",
-        "context_window": 131072,
-        "free": True,
-        "provider": "qwencode",
-        "capabilities": ["code", "chat", "analysis"],
-        "speed": "fast",
-    },
-    "qwen/qwen3-coder:free": {
-        "name": "qwen/qwen3-coder:free",
-        "display_name": "Qwen3 Coder (OpenRouter Free)",
-        "description": "Qwen3 Coder via OpenRouter free tier (1,000 calls/day)",
-        "context_window": 128000,
-        "free": True,
-        "provider": "openrouter",
-        "capabilities": ["code", "chat"],
-        "speed": "fast",
-    },
 }
 
 
@@ -352,16 +389,25 @@ PLANNING_DEPTHS = {
 }
 
 
-# Memory strategies
+# Memory strategies with detailed descriptions
 MEMORY_STRATEGIES = {
-    "minimal": "Minimal context retention - faster but may miss connections",
-    "adaptive": "Automatically adjusts based on complexity",
-    "full": "Maximum context retention - slower but most thorough",
+    "minimal": "Minimal context retention - faster but may miss connections. Best for simple targets.",
+    "adaptive": "Automatically adjusts based on complexity. Recommended for most scans.",
+    "full": "Maximum context retention - slower but most thorough. Best for complex targets.",
 }
 
 
 # Severity levels for filtering
 SEVERITY_LEVELS = ["critical", "high", "medium", "low", "info"]
+
+# Severity level colors for dashboard
+SEVERITY_COLORS = {
+    "critical": "#dc2626",
+    "high": "#ea580c",
+    "medium": "#d97706",
+    "low": "#2563eb",
+    "info": "#6b7280",
+}
 
 
 # Output formats
@@ -370,4 +416,12 @@ OUTPUT_FORMATS = {
     "markdown": "Markdown format - Human readable",
     "html": "HTML format - Interactive report",
     "sarif": "SARIF format - IDE/CI integration",
+}
+
+
+# Scan modes with descriptions
+SCAN_MODES = {
+    "black_box": "Black Box - External testing only (web application)",
+    "white_box": "White Box - Source code analysis + testing",
+    "combined": "Combined - Full scope testing with source and live app",
 }
