@@ -1,0 +1,180 @@
+<multi_agent_collaboration_module>
+    <overview>
+        This module provides guidance for efficient multi-agent collaboration during
+        penetration testing. It helps prevent duplicate work, enables vulnerability
+        chaining, and ensures comprehensive coverage.
+    </overview>
+
+    <collaboration_principles>
+        <principle name="claim_before_test">
+            ALWAYS claim a target before testing to prevent duplicate work.
+            Use claim_target() with the endpoint and test type.
+            Example: claim_target("/api/users", "sqli")
+        </principle>
+        
+        <principle name="share_immediately">
+            Share findings immediately so other agents can:
+            - Avoid duplicate discovery
+            - Chain vulnerabilities for higher impact
+            - Build upon your work
+            Use share_finding() with chainable=true for chainable vulns.
+        </principle>
+        
+        <principle name="check_before_start">
+            Before starting any test:
+            1. Check list_claims() - is someone already testing this?
+            2. Check list_findings() - has this already been found?
+            3. Check get_collaboration_status() - what opportunities exist?
+        </principle>
+        
+        <principle name="communicate_blocks">
+            When blocked or need help:
+            - Use request_help() for specialized assistance
+            - Add to work_queue() if you can't handle something
+            - Use broadcast_message() for important discoveries
+        </principle>
+    </collaboration_principles>
+
+    <vulnerability_chaining>
+        <overview>
+            Vulnerability chaining combines multiple vulnerabilities for higher impact.
+            Always look for chaining opportunities with other agents' findings.
+        </overview>
+        
+        <common_chains>
+            <chain name="SSRF_to_Internal_Access">
+                <step1>SSRF allows fetching internal URLs</step1>
+                <step2>Access internal admin panels or services</step2>
+                <step3>Chain with IDOR for data exfiltration</step3>
+                <impact>Access to internal systems, potential RCE</impact>
+            </chain>
+            
+            <chain name="XSS_to_Account_Takeover">
+                <step1>Stored/Reflected XSS allows script execution</step1>
+                <step2>Steal session tokens or cookies</step2>
+                <step3>Chain with CSRF for privilege escalation</step3>
+                <impact>Full account takeover</impact>
+            </chain>
+            
+            <chain name="SQLi_to_Data_Exfil">
+                <step1>SQL injection allows data extraction</step1>
+                <step2>Chain with IDOR to access more records</step2>
+                <step3>Use auth bypass to access admin data</step3>
+                <impact>Complete database compromise</impact>
+            </chain>
+            
+            <chain name="File_Upload_to_RCE">
+                <step1>Unrestricted file upload</step1>
+                <step2>Upload web shell or malicious file</step2>
+                <step3>Chain with LFI/path traversal for execution</step3>
+                <impact>Remote code execution</impact>
+            </chain>
+            
+            <chain name="Auth_Bypass_to_Privilege_Escalation">
+                <step1>Authentication bypass grants access</step1>
+                <step2>Chain with IDOR for horizontal access</step2>
+                <step3>Find admin functionality for vertical escalation</step3>
+                <impact>Full admin access</impact>
+            </chain>
+        </common_chains>
+        
+        <how_to_chain>
+            1. Check list_findings(chainable_only=true) regularly
+            2. Look for chain_opportunities in get_collaboration_status()
+            3. When you find something chainable, update chain_suggestions
+            4. Coordinate with the original finder via send_message_to_agent()
+            5. Document the complete chain in your findings
+        </how_to_chain>
+    </vulnerability_chaining>
+
+    <work_distribution>
+        <strategy name="claim_based">
+            Each agent claims specific targets/test_types:
+            - Agent A: SQLi testing on /api endpoints
+            - Agent B: XSS testing on user-facing pages
+            - Agent C: Authentication and authorization testing
+            
+            Benefits: No overlap, clear ownership, efficient coverage
+        </strategy>
+        
+        <strategy name="queue_based">
+            Use work_queue for discovered targets:
+            - add_to_work_queue() when you find endpoints
+            - get_next_work_item() when ready for new work
+            - Priority-based: critical items tested first
+            
+            Benefits: Balanced workload, priority handling
+        </strategy>
+        
+        <strategy name="specialization">
+            Agents specialize in vulnerability types:
+            - SQL injection specialist
+            - XSS/DOM analysis specialist
+            - Authentication testing specialist
+            - API security specialist
+            
+            Use request_help() when you need specialist assistance
+        </strategy>
+    </work_distribution>
+
+    <collaboration_workflow>
+        <phase name="reconnaissance">
+            1. Share discovered endpoints via add_to_work_queue()
+            2. Share technology identifications via broadcast_message()
+            3. Claim reconnaissance targets to avoid overlap
+        </phase>
+        
+        <phase name="testing">
+            1. claim_target() before testing any endpoint
+            2. Check list_findings() for related vulnerabilities
+            3. Test systematically within your claimed scope
+            4. share_finding() immediately when you find something
+        </phase>
+        
+        <phase name="exploitation">
+            1. Coordinate chains with other agents
+            2. request_help() for specialized exploitation needs
+            3. Share successful PoCs for chaining opportunities
+            4. Document complete chains in findings
+        </phase>
+        
+        <phase name="reporting">
+            1. Review all shared findings
+            2. Identify and document vulnerability chains
+            3. Consolidate findings by severity
+            4. Include collaboration credits
+        </phase>
+    </collaboration_workflow>
+
+    <best_practices>
+        <practice name="regular_status_checks">
+            Periodically call get_collaboration_status() to:
+            - See what others have found
+            - Identify chaining opportunities
+            - Find help requests you can assist with
+            - Ensure no targets are being neglected
+        </practice>
+        
+        <practice name="detailed_findings">
+            When sharing findings, include:
+            - Detailed PoC that others can use
+            - chainable=true if the vuln can be chained
+            - chain_suggestions for how to chain it
+            - Relevant tags for discoverability
+        </practice>
+        
+        <practice name="help_others">
+            Respond to help_requests when you can:
+            - Share expertise in your specialty areas
+            - Offer to take over blocked tasks
+            - Provide analysis of encoded/obfuscated data
+        </practice>
+        
+        <practice name="release_claims">
+            Always release_claim() when done:
+            - Include reason (completed, blocked, etc.)
+            - Allows others to test different aspects
+            - Keeps the claim system accurate
+        </practice>
+    </best_practices>
+</multi_agent_collaboration_module>

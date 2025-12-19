@@ -27,6 +27,8 @@ HAS_PERPLEXITY_API = bool(os.getenv("PERPLEXITY_API_KEY"))
 if not SANDBOX_MODE:
     from .agents_graph import *  # noqa: F403
     from .browser import *  # noqa: F403
+    from .collaboration import *  # noqa: F403
+    from .cve_database import *  # noqa: F403
     from .file_edit import *  # noqa: F403
     from .finish import *  # noqa: F403
     from .notes import *  # noqa: F403

@@ -1,0 +1,454 @@
+<tools>
+
+<!-- ==========================================================================
+     CLAIM SYSTEM
+     Prevent duplicate work by claiming endpoints/parameters for testing
+     ========================================================================== -->
+
+<tool name="claim_target">
+    <description>
+        Claim an endpoint/parameter for testing to prevent duplicate work.
+        
+        BEFORE testing any endpoint or parameter, claim it so other agents know
+        you're working on it and won't duplicate your effort.
+        
+        Example workflow:
+        1. You find /api/users endpoint
+        2. claim_target("/api/users", "sqli")
+        3. Perform SQLi testing
+        4. share_finding() if you find something
+        5. release_claim() when done
+    </description>
+    <parameters>
+        <parameter name="target" type="string" required="true">
+            The target to claim (URL path, parameter, or feature)
+            Examples: "/api/users", "id parameter on /items", "/login SQLi", "admin panel auth"
+        </parameter>
+        <parameter name="test_type" type="string" required="true">
+            Type of test being performed. Examples: "sqli", "xss", "auth_bypass", "idor", "ssrf", "recon", "fuzzing"
+        </parameter>
+        <parameter name="description" type="string" required="false">
+            Detailed description of what you're testing
+        </parameter>
+        <parameter name="estimated_duration_minutes" type="integer" required="false">
+            How long you expect the test to take. Default: 30
+        </parameter>
+    </parameters>
+    <returns>
+        - success: Whether the claim was successful
+        - claim_id: Unique ID for the claim (use for release_claim)
+        - conflict: Info about existing claim if failed
+    </returns>
+    <usage_example>
+        <![CDATA[
+        <function name="claim_target">
+            <parameter name="target">/api/users</parameter>
+            <parameter name="test_type">sqli</parameter>
+            <parameter name="description">Testing user search for SQL injection</parameter>
+            <parameter name="estimated_duration_minutes">45</parameter>
+        </function>
+        ]]>
+    </usage_example>
+</tool>
+
+<tool name="release_claim">
+    <description>
+        Release a claim on a target, allowing other agents to test it.
+        
+        Call this when you've finished testing or want to let another agent handle it.
+    </description>
+    <parameters>
+        <parameter name="claim_id" type="string" required="false">
+            The claim ID from claim_target response
+        </parameter>
+        <parameter name="target" type="string" required="false">
+            Alternative: target name (use with test_type)
+        </parameter>
+        <parameter name="test_type" type="string" required="false">
+            Alternative: test type (use with target)
+        </parameter>
+        <parameter name="reason" type="string" required="false">
+            Reason for releasing. Examples: "completed", "blocked", "needs_different_approach"
+        </parameter>
+    </parameters>
+    <usage_example>
+        <![CDATA[
+        <!-- Release by claim_id -->
+        <function name="release_claim">
+            <parameter name="claim_id">claim_abc12345</parameter>
+            <parameter name="reason">completed</parameter>
+        </function>
+        
+        <!-- Release by target/type -->
+        <function name="release_claim">
+            <parameter name="target">/api/users</parameter>
+            <parameter name="test_type">sqli</parameter>
+        </function>
+        ]]>
+    </usage_example>
+</tool>
+
+<tool name="list_claims">
+    <description>
+        List all current claims to see what's being tested.
+        
+        Use this to:
+        - Find available targets (not claimed)
+        - See what other agents are working on
+        - Avoid duplicate testing
+    </description>
+    <parameters>
+        <parameter name="filter_agent" type="string" required="false">
+            Filter by agent ID or name
+        </parameter>
+        <parameter name="filter_test_type" type="string" required="false">
+            Filter by test type (e.g., "sqli", "xss")
+        </parameter>
+        <parameter name="include_expired" type="boolean" required="false">
+            Include expired claims. Default: false
+        </parameter>
+    </parameters>
+    <returns>
+        - claims: List of active claims with agent info
+        - my_claims: Your own claims
+        - available_targets: Suggestions for unclaimed targets
+    </returns>
+</tool>
+
+<!-- ==========================================================================
+     FINDING SHARING
+     Share discovered vulnerabilities so other agents can chain them
+     ========================================================================== -->
+
+<tool name="share_finding">
+    <description>
+        Share a vulnerability finding with all agents for potential chaining.
+        
+        When you discover a vulnerability, SHARE IT so other agents can:
+        - Avoid duplicating your discovery
+        - Chain it with their findings for higher impact
+        - Build upon your work
+        
+        This is CRITICAL for effective collaboration and vulnerability chaining!
+    </description>
+    <parameters>
+        <parameter name="title" type="string" required="true">
+            Brief title of the finding. Example: "SSRF at /api/fetch"
+        </parameter>
+        <parameter name="finding_type" type="string" required="true">
+            Type of vulnerability. Examples: "ssrf", "sqli", "xss", "idor", "auth_bypass", "rce", "lfi", "xxe"
+        </parameter>
+        <parameter name="severity" type="string" required="true">
+            Severity level: "critical", "high", "medium", "low", "info"
+        </parameter>
+        <parameter name="target" type="string" required="true">
+            Where the vulnerability exists (URL, parameter, endpoint)
+        </parameter>
+        <parameter name="description" type="string" required="true">
+            Detailed description of the vulnerability
+        </parameter>
+        <parameter name="poc" type="string" required="false">
+            Proof-of-concept payload or steps to reproduce
+        </parameter>
+        <parameter name="chainable" type="boolean" required="false">
+            Whether this finding can be chained with others. Default: true
+        </parameter>
+        <parameter name="chain_suggestions" type="array" required="false">
+            Suggested ways to chain this vulnerability.
+            Example: ["Chain with IDOR for data exfiltration", "Use for internal port scanning"]
+        </parameter>
+        <parameter name="tags" type="array" required="false">
+            Additional tags. Example: ["api", "file_upload", "admin"]
+        </parameter>
+    </parameters>
+    <usage_example>
+        <![CDATA[
+        <function name="share_finding">
+            <parameter name="title">SSRF at /api/fetch endpoint</parameter>
+            <parameter name="finding_type">ssrf</parameter>
+            <parameter name="severity">high</parameter>
+            <parameter name="target">/api/fetch?url=</parameter>
+            <parameter name="description">The url parameter allows fetching arbitrary URLs including internal services</parameter>
+            <parameter name="poc">GET /api/fetch?url=http://169.254.169.254/latest/meta-data/</parameter>
+            <parameter name="chainable">true</parameter>
+            <parameter name="chain_suggestions">["Chain with internal service access", "Try to access admin panel", "Port scan internal network"]</parameter>
+        </function>
+        ]]>
+    </usage_example>
+</tool>
+
+<tool name="list_findings">
+    <description>
+        List shared findings from all agents.
+        
+        Use this to:
+        - See what vulnerabilities have been discovered
+        - Find chainable vulnerabilities to combine with yours
+        - Avoid duplicate testing
+        - Look for vulnerability chaining opportunities
+    </description>
+    <parameters>
+        <parameter name="filter_type" type="string" required="false">
+            Filter by vulnerability type (e.g., "ssrf", "sqli")
+        </parameter>
+        <parameter name="filter_severity" type="string" required="false">
+            Filter by severity: "critical", "high", "medium", "low"
+        </parameter>
+        <parameter name="chainable_only" type="boolean" required="false">
+            Only show findings marked as chainable. Default: false
+        </parameter>
+        <parameter name="exclude_own" type="boolean" required="false">
+            Exclude findings you discovered. Default: false
+        </parameter>
+        <parameter name="max_results" type="integer" required="false">
+            Maximum results to return. Default: 50
+        </parameter>
+    </parameters>
+    <returns>
+        - findings: List of shared findings
+        - chain_opportunities: Suggested vulnerability chains
+        - by_severity: Findings grouped by severity
+    </returns>
+</tool>
+
+<tool name="get_finding_details">
+    <description>
+        Get full details of a specific finding including the PoC.
+    </description>
+    <parameters>
+        <parameter name="finding_id" type="string" required="true">
+            The finding ID to retrieve
+        </parameter>
+    </parameters>
+</tool>
+
+<!-- ==========================================================================
+     WORK QUEUE
+     Central queue for coordinated testing
+     ========================================================================== -->
+
+<tool name="add_to_work_queue">
+    <description>
+        Add an endpoint/parameter to the work queue for testing.
+        
+        Use this to add targets that need testing but you can't handle right now.
+        Other agents can pick up items from the queue.
+    </description>
+    <parameters>
+        <parameter name="target" type="string" required="true">
+            The target to test (URL, endpoint, parameter)
+        </parameter>
+        <parameter name="test_types" type="array" required="true">
+            List of test types needed. Example: ["sqli", "xss", "idor"]
+        </parameter>
+        <parameter name="priority" type="string" required="false">
+            Priority level: "critical", "high", "medium", "low". Default: "medium"
+        </parameter>
+        <parameter name="description" type="string" required="false">
+            Description or notes about the target
+        </parameter>
+        <parameter name="context" type="object" required="false">
+            Additional context (auth requirements, headers, etc.)
+        </parameter>
+    </parameters>
+    <usage_example>
+        <![CDATA[
+        <function name="add_to_work_queue">
+            <parameter name="target">/admin/users</parameter>
+            <parameter name="test_types">["auth_bypass", "idor", "sqli"]</parameter>
+            <parameter name="priority">high</parameter>
+            <parameter name="description">Admin endpoint - requires auth bypass first</parameter>
+        </function>
+        ]]>
+    </usage_example>
+</tool>
+
+<tool name="get_next_work_item">
+    <description>
+        Get the next item from the work queue to test.
+        
+        Use this when you're ready to test something new.
+    </description>
+    <parameters>
+        <parameter name="preferred_test_types" type="array" required="false">
+            List of preferred test types to match
+        </parameter>
+        <parameter name="auto_claim" type="boolean" required="false">
+            Automatically claim the item. Default: true
+        </parameter>
+    </parameters>
+    <usage_example>
+        <![CDATA[
+        <function name="get_next_work_item">
+            <parameter name="preferred_test_types">["sqli", "idor"]</parameter>
+            <parameter name="auto_claim">true</parameter>
+        </function>
+        ]]>
+    </usage_example>
+</tool>
+
+<tool name="list_work_queue">
+    <description>
+        List items in the work queue.
+    </description>
+    <parameters>
+        <parameter name="status_filter" type="string" required="false">
+            Filter by status: "pending", "claimed", "completed", "all". Default: "all"
+        </parameter>
+        <parameter name="max_results" type="integer" required="false">
+            Maximum results. Default: 50
+        </parameter>
+    </parameters>
+</tool>
+
+<!-- ==========================================================================
+     HELP REQUESTS
+     Request specialized assistance from other agents
+     ========================================================================== -->
+
+<tool name="request_help">
+    <description>
+        Request help from other agents for specialized tasks.
+        
+        Use this when you encounter something that needs specialized expertise
+        that another agent might be able to help with.
+    </description>
+    <parameters>
+        <parameter name="title" type="string" required="true">
+            Brief title of what you need help with
+        </parameter>
+        <parameter name="description" type="string" required="true">
+            Detailed description of the problem
+        </parameter>
+        <parameter name="help_type" type="string" required="true">
+            Type of help needed:
+            - "analysis": Need help analyzing something (encoded data, obfuscated code)
+            - "exploitation": Need help creating/refining an exploit
+            - "bypass": Need help bypassing a protection (WAF, filter, etc.)
+            - "crypto": Need help with cryptographic analysis
+            - "reversing": Need help with reverse engineering
+            - "other": Other specialized help
+        </parameter>
+        <parameter name="target" type="string" required="false">
+            The target/endpoint related to the request
+        </parameter>
+        <parameter name="urgency" type="string" required="false">
+            How urgent: "low", "medium", "high", "critical". Default: "medium"
+        </parameter>
+        <parameter name="attachments" type="object" required="false">
+            Additional data (encoded strings, payloads tried, etc.)
+        </parameter>
+    </parameters>
+    <usage_example>
+        <![CDATA[
+        <function name="request_help">
+            <parameter name="title">Base64 encoded parameter - need analysis</parameter>
+            <parameter name="description">Found a parameter with base64 encoding, decoded to what looks like serialized object. Need help identifying the format.</parameter>
+            <parameter name="help_type">analysis</parameter>
+            <parameter name="target">/api/session?data=</parameter>
+            <parameter name="urgency">medium</parameter>
+            <parameter name="attachments">{"encoded_value": "eyJ1c2VyIjoidGVzdCIsInJvbGUiOiJ1c2VyIn0=", "decoded": "{\"user\":\"test\",\"role\":\"user\"}"}</parameter>
+        </function>
+        ]]>
+    </usage_example>
+</tool>
+
+<tool name="respond_to_help_request">
+    <description>
+        Respond to another agent's help request.
+    </description>
+    <parameters>
+        <parameter name="request_id" type="string" required="true">
+            The help request ID to respond to
+        </parameter>
+        <parameter name="response" type="string" required="true">
+            Your response/suggestion
+        </parameter>
+        <parameter name="solution" type="string" required="false">
+            A specific solution if you have one
+        </parameter>
+        <parameter name="can_take_over" type="boolean" required="false">
+            Whether you're offering to take over this task. Default: false
+        </parameter>
+    </parameters>
+</tool>
+
+<tool name="list_help_requests">
+    <description>
+        List help requests from all agents.
+    </description>
+    <parameters>
+        <parameter name="status_filter" type="string" required="false">
+            Filter by status: "open", "resolved", "all". Default: "open"
+        </parameter>
+        <parameter name="help_type_filter" type="string" required="false">
+            Filter by help type
+        </parameter>
+        <parameter name="include_own" type="boolean" required="false">
+            Include your own requests. Default: true
+        </parameter>
+    </parameters>
+</tool>
+
+<!-- ==========================================================================
+     COLLABORATION STATUS
+     Overview of all collaborative activities
+     ========================================================================== -->
+
+<tool name="get_collaboration_status">
+    <description>
+        Get an overview of all collaboration activities.
+        
+        Returns a summary of:
+        - Active claims
+        - Shared findings
+        - Work queue status
+        - Help requests
+        - Recent broadcasts
+        - Vulnerability chain opportunities
+        
+        Use this to get a quick snapshot of what all agents are doing.
+    </description>
+    <parameters>
+        <!-- No parameters required -->
+    </parameters>
+    <returns>
+        - summary: Counts of claims, findings, queue items, help requests
+        - my_activity: Your claims, findings, work items
+        - chain_opportunities: Suggested vulnerability chains
+        - recommendations: What you should do next
+    </returns>
+</tool>
+
+<tool name="broadcast_message">
+    <description>
+        Broadcast a message to all or specific agents.
+        
+        Use this for important updates that all agents should know about.
+    </description>
+    <parameters>
+        <parameter name="message" type="string" required="true">
+            The message to broadcast
+        </parameter>
+        <parameter name="message_type" type="string" required="false">
+            Type: "info", "warning", "alert", "update". Default: "info"
+        </parameter>
+        <parameter name="priority" type="string" required="false">
+            Priority: "low", "normal", "high". Default: "normal"
+        </parameter>
+        <parameter name="target_agents" type="array" required="false">
+            Specific agent IDs to message. Default: all agents
+        </parameter>
+    </parameters>
+    <usage_example>
+        <![CDATA[
+        <function name="broadcast_message">
+            <parameter name="message">Found WAF blocking SQLi payloads - use tamper scripts</parameter>
+            <parameter name="message_type">warning</parameter>
+            <parameter name="priority">high</parameter>
+        </function>
+        ]]>
+    </usage_example>
+</tool>
+
+</tools>

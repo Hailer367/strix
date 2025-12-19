@@ -1,0 +1,274 @@
+<tools>
+
+<tool name="query_cve_database">
+    <description>
+        Query the NVD (National Vulnerability Database) for CVEs affecting a technology.
+        
+        Use this tool when you:
+        - Identify a technology/version and want to find known vulnerabilities
+        - Need to check if a specific version is vulnerable
+        - Want to find CVEs for bug bounty testing
+        
+        Examples:
+        - Found "nginx/1.18.0" → Query for nginx CVEs affecting 1.18.0
+        - Detected WordPress 5.9 → Find WordPress vulnerabilities
+        - Identified Apache Tomcat → Check for recent Apache CVEs
+    </description>
+    <parameters>
+        <parameter name="keyword" type="string" required="true">
+            Technology/product name to search (e.g., "nginx", "wordpress", "apache", "jquery")
+        </parameter>
+        <parameter name="version" type="string" required="false">
+            Specific version to check (e.g., "1.18.0", "5.9.3"). Results will be filtered
+            to only include CVEs that affect this version.
+        </parameter>
+        <parameter name="severity_threshold" type="string" required="false">
+            Minimum CVSS severity to include. Options: LOW, MEDIUM, HIGH, CRITICAL.
+            Default: LOW (includes all severities)
+        </parameter>
+        <parameter name="max_results" type="integer" required="false">
+            Maximum number of CVEs to return. Default: 20
+        </parameter>
+    </parameters>
+    <returns>
+        Dictionary containing:
+        - success: Boolean indicating if query succeeded
+        - cves: List of CVE entries with severity, description, references, exploit availability
+        - total_found: Number of matching CVEs
+        - recommendations: Testing suggestions based on findings
+    </returns>
+    <usage_example>
+        <![CDATA[
+        <!-- Find nginx 1.18.0 vulnerabilities -->
+        <function name="query_cve_database">
+            <parameter name="keyword">nginx</parameter>
+            <parameter name="version">1.18.0</parameter>
+            <parameter name="severity_threshold">MEDIUM</parameter>
+        </function>
+        
+        <!-- Find all critical WordPress CVEs -->
+        <function name="query_cve_database">
+            <parameter name="keyword">wordpress</parameter>
+            <parameter name="severity_threshold">CRITICAL</parameter>
+        </function>
+        ]]>
+    </usage_example>
+</tool>
+
+<tool name="search_exploits">
+    <description>
+        Search Exploit-DB for exploits and Proof-of-Concept code.
+        
+        Use this tool when you:
+        - Found a CVE and need working exploit code
+        - Want to find PoCs for a vulnerability type
+        - Need exploit code for a specific technology
+        
+        The tool searches Exploit-DB and falls back to GitHub for additional results.
+    </description>
+    <parameters>
+        <parameter name="search_term" type="string" required="true">
+            Search term - can be CVE ID, product name, or vulnerability type.
+            Examples: "CVE-2021-23017", "wordpress plugin sqli", "nginx buffer overflow"
+        </parameter>
+        <parameter name="exploit_type" type="string" required="false">
+            Filter by exploit type. Options: "webapps", "remote", "local", "dos", "shellcode", "papers"
+        </parameter>
+        <parameter name="platform" type="string" required="false">
+            Filter by platform. Options: "linux", "windows", "php", "python", etc.
+        </parameter>
+        <parameter name="max_results" type="integer" required="false">
+            Maximum results to return. Default: 15
+        </parameter>
+    </parameters>
+    <returns>
+        Dictionary containing:
+        - success: Boolean indicating if search succeeded
+        - exploits: List with exploit IDs, titles, URLs, and download links
+        - alternative_searches: Fallback search URLs if results are limited
+    </returns>
+    <usage_example>
+        <![CDATA[
+        <!-- Find exploits for CVE-2021-23017 -->
+        <function name="search_exploits">
+            <parameter name="search_term">CVE-2021-23017</parameter>
+        </function>
+        
+        <!-- Find WordPress SQL injection exploits -->
+        <function name="search_exploits">
+            <parameter name="search_term">wordpress sqli</parameter>
+            <parameter name="exploit_type">webapps</parameter>
+        </function>
+        ]]>
+    </usage_example>
+</tool>
+
+<tool name="get_cve_details">
+    <description>
+        Get comprehensive details about a specific CVE.
+        
+        Use this tool when you:
+        - Need full details about a vulnerability
+        - Want to understand the attack vector and complexity
+        - Need to find patches and mitigations
+        - Want exploit and PoC references
+    </description>
+    <parameters>
+        <parameter name="cve_id" type="string" required="true">
+            The CVE identifier (e.g., "CVE-2021-23017", "CVE-2024-1234")
+        </parameter>
+    </parameters>
+    <returns>
+        Dictionary containing:
+        - cve_details: Full description, CVSS scores, attack vector details
+        - affected_products: List of affected software/versions
+        - exploitability: Exploit and PoC availability info
+        - remediation: Patch links and mitigation recommendations
+    </returns>
+    <usage_example>
+        <![CDATA[
+        <function name="get_cve_details">
+            <parameter name="cve_id">CVE-2021-23017</parameter>
+        </function>
+        ]]>
+    </usage_example>
+</tool>
+
+<tool name="search_github_advisories">
+    <description>
+        Search GitHub Security Advisories database for package vulnerabilities.
+        
+        Use this tool when you:
+        - Testing applications using npm, pip, Maven, or other package managers
+        - Want to find vulnerabilities in specific packages
+        - Need to check for package ecosystem-specific issues
+    </description>
+    <parameters>
+        <parameter name="ecosystem" type="string" required="false">
+            Package ecosystem to search. Options: "npm", "pip", "maven", "nuget", "go", "rubygems", "composer", "rust"
+        </parameter>
+        <parameter name="package" type="string" required="false">
+            Specific package name to search (e.g., "lodash", "requests", "axios")
+        </parameter>
+        <parameter name="severity" type="string" required="false">
+            Filter by severity. Options: "low", "medium", "high", "critical"
+        </parameter>
+        <parameter name="keyword" type="string" required="false">
+            Free-text keyword search (e.g., "prototype pollution", "rce", "deserialization")
+        </parameter>
+        <parameter name="max_results" type="integer" required="false">
+            Maximum results to return. Default: 15
+        </parameter>
+    </parameters>
+    <returns>
+        Dictionary containing:
+        - advisories: List of GitHub security advisories with CVE links
+        - vulnerable_versions: Affected version ranges
+        - patched_versions: Fixed versions information
+    </returns>
+    <usage_example>
+        <![CDATA[
+        <!-- Find npm package vulnerabilities -->
+        <function name="search_github_advisories">
+            <parameter name="ecosystem">npm</parameter>
+            <parameter name="severity">critical</parameter>
+        </function>
+        
+        <!-- Check specific package -->
+        <function name="search_github_advisories">
+            <parameter name="package">lodash</parameter>
+            <parameter name="keyword">prototype pollution</parameter>
+        </function>
+        ]]>
+    </usage_example>
+</tool>
+
+<tool name="get_technology_vulnerabilities">
+    <description>
+        Get comprehensive vulnerability information for a technology from multiple sources.
+        
+        This is a HIGH-LEVEL aggregation tool that queries NVD, Exploit-DB, and GitHub
+        to provide a complete picture of known vulnerabilities for a technology.
+        
+        Use this tool when you:
+        - Identified a technology during reconnaissance
+        - Want all known vulns and exploits in one query
+        - Need prioritized testing recommendations
+    </description>
+    <parameters>
+        <parameter name="technology" type="string" required="true">
+            Technology name (e.g., "nginx", "wordpress", "apache tomcat", "spring boot")
+        </parameter>
+        <parameter name="version" type="string" required="false">
+            Specific version to check (e.g., "1.18.0", "5.9.3")
+        </parameter>
+        <parameter name="vuln_types" type="string" required="false">
+            Comma-separated vulnerability types to focus on.
+            Options: "rce,sqli,xss,ssrf,lfi,xxe,auth,dos"
+        </parameter>
+        <parameter name="include_exploits" type="boolean" required="false">
+            Whether to search for available exploits. Default: true
+        </parameter>
+        <parameter name="max_results" type="integer" required="false">
+            Maximum total results. Default: 20
+        </parameter>
+    </parameters>
+    <returns>
+        Dictionary containing:
+        - vulnerabilities: Aggregated list from all sources
+        - exploits_available: Known exploits with download links
+        - attack_surface: Potential attack vectors identified
+        - testing_priority: Prioritized list of what to test first
+        - summary: Statistics about findings
+    </returns>
+    <usage_example>
+        <![CDATA[
+        <!-- Get all nginx 1.18.0 vulnerabilities with exploit focus -->
+        <function name="get_technology_vulnerabilities">
+            <parameter name="technology">nginx</parameter>
+            <parameter name="version">1.18.0</parameter>
+            <parameter name="include_exploits">true</parameter>
+        </function>
+        
+        <!-- Focus on RCE and SQLi for WordPress -->
+        <function name="get_technology_vulnerabilities">
+            <parameter name="technology">wordpress</parameter>
+            <parameter name="vuln_types">rce,sqli,xss</parameter>
+        </function>
+        ]]>
+    </usage_example>
+</tool>
+
+<tool name="search_packetstorm">
+    <description>
+        Search PacketStorm Security for exploits, tools, and security papers.
+        
+        PacketStorm often has exploits and tools not found on other databases.
+        Use this as a supplementary search source.
+    </description>
+    <parameters>
+        <parameter name="search_term" type="string" required="true">
+            Search term (CVE ID, product name, vulnerability type)
+        </parameter>
+        <parameter name="search_type" type="string" required="false">
+            Type of content. Options: "files" (exploits/tools), "papers", "news". Default: "files"
+        </parameter>
+        <parameter name="max_results" type="integer" required="false">
+            Maximum results. Default: 15
+        </parameter>
+    </parameters>
+    <returns>
+        Dictionary containing:
+        - results: List of matching content with URLs
+        - direct_search_url: URL for manual browsing
+    </returns>
+    <usage_example>
+        <![CDATA[
+        <function name="search_packetstorm">
+            <parameter name="search_term">CVE-2021-23017</parameter>
+        </function>
+        ]]>
+    </usage_example>
+</tool>
+
+</tools>

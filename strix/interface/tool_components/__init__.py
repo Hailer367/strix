@@ -1,6 +1,8 @@
 from . import (
     agents_graph_renderer,
     browser_renderer,
+    collaboration_renderer,
+    cve_renderer,
     file_edit_renderer,
     finish_renderer,
     notes_renderer,
@@ -22,6 +24,8 @@ __all__ = [
     "ToolTUIRegistry",
     "agents_graph_renderer",
     "browser_renderer",
+    "collaboration_renderer",
+    "cve_renderer",
     "file_edit_renderer",
     "finish_renderer",
     "get_tool_renderer",
