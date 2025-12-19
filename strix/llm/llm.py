@@ -146,7 +146,11 @@ class RequestStats:
 
 class LLM:
     def __init__(
-        self, config: LLMConfig, agent_name: str | None = None, agent_id: str | None = None
+        self,
+        config: LLMConfig,
+        agent_name: str | None = None,
+        agent_id: str | None = None,
+        custom_system_prompt: str | None = None,
     ):
         self.config = config
         self.agent_name = agent_name
@@ -159,7 +163,10 @@ class LLM:
             timeout=self.config.timeout,
         )
 
-        if agent_name:
+        # Support for custom system prompts (used by create_custom_agent)
+        if custom_system_prompt:
+            self.system_prompt = custom_system_prompt
+        elif agent_name:
             prompt_dir = Path(__file__).parent.parent / "agents" / agent_name
             prompts_dir = Path(__file__).parent.parent / "prompts"
 
@@ -189,6 +196,10 @@ class LLM:
                 self.system_prompt = "You are a helpful AI assistant."
         else:
             self.system_prompt = "You are a helpful AI assistant."
+    
+    def set_custom_system_prompt(self, custom_prompt: str) -> None:
+        """Set a custom system prompt for the LLM."""
+        self.system_prompt = custom_prompt
 
     def set_agent_identity(self, agent_name: str | None, agent_id: str | None) -> None:
         if agent_name:
