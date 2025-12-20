@@ -180,18 +180,47 @@ def load_qwencode_credentials() -> dict[str, Any] | None:
     return None
 
 
+# Default fallback models when API doesn't return models
+# These are the known Roo Code Cloud models as of late 2024/early 2025
+DEFAULT_ROOCODE_MODELS: dict = {
+    "grok-code-fast-1": {
+        "name": "grok-code-fast-1",
+        "display_name": "Grok Code Fast 1",
+        "description": "Fast coding model optimized for speed - 262K context window",
+        "context_window": 262000,
+        "free": True,
+        "provider": "roocode",
+        "capabilities": ["code", "chat"],
+        "speed": "fast",
+        "cost": "free",
+    },
+    "roo/code-supernova": {
+        "name": "roo/code-supernova",
+        "display_name": "Roo Code Supernova",
+        "description": "Advanced reasoning model for complex tasks - 200K context window",
+        "context_window": 200000,
+        "free": True,
+        "provider": "roocode",
+        "capabilities": ["code", "chat", "reasoning"],
+        "speed": "moderate",
+        "cost": "free",
+    },
+}
+
+
 async def fetch_roocode_models(force_refresh: bool = False) -> dict[str, dict[str, Any]]:
     """
     Fetch available models from Roo Code Cloud API.
     
     Models are ONLY fetched when the user is authenticated.
-    No fallback to hardcoded models - we only show what the API provides.
+    Falls back to default known models if the API doesn't return any models,
+    which can happen with certain authentication tokens (like vscode:// callback tokens).
     
     Args:
         force_refresh: Force refresh from API even if cache is valid
         
     Returns:
-        Dictionary of available models, empty if not authenticated or API fails
+        Dictionary of available models, empty if not authenticated
     """
     global _cached_roocode_models, _models_cache_time
     
@@ -219,10 +248,12 @@ async def fetch_roocode_models(force_refresh: bool = False) -> dict[str, dict[st
             )
             
             if response.status_code == 401:
-                # Token expired or invalid
-                logger.warning("Roo Code token appears invalid, clearing auth state")
-                dashboard_state.auth_status = AuthStatus.EXPIRED
-                return {}
+                # Token might be invalid for API but still valid for inference
+                # This happens with vscode:// callback tokens - they work for chat but not /models
+                logger.warning("Roo Code token rejected by /models endpoint, using default models")
+                _cached_roocode_models = DEFAULT_ROOCODE_MODELS.copy()
+                _models_cache_time = time.time()
+                return _cached_roocode_models
             
             if response.status_code == 200:
                 data = response.json()
@@ -256,19 +287,34 @@ async def fetch_roocode_models(force_refresh: bool = False) -> dict[str, dict[st
                     logger.info(f"Fetched {len(models)} models from Roo Code Cloud API")
                     return models
                 else:
-                    logger.warning("API returned empty model list")
-                    return {}
+                    # API returned 200 but no models - use defaults
+                    logger.warning("API returned empty model list, using default models")
+                    _cached_roocode_models = DEFAULT_ROOCODE_MODELS.copy()
+                    _models_cache_time = time.time()
+                    return _cached_roocode_models
             else:
-                logger.warning(f"Failed to fetch models: HTTP {response.status_code}")
-                # Return cached models if available, otherwise empty
-                return _cached_roocode_models if _cached_roocode_models else {}
+                logger.warning(f"Failed to fetch models: HTTP {response.status_code}, using default models")
+                # Return cached models if available, otherwise defaults
+                if _cached_roocode_models:
+                    return _cached_roocode_models
+                _cached_roocode_models = DEFAULT_ROOCODE_MODELS.copy()
+                _models_cache_time = time.time()
+                return _cached_roocode_models
                 
     except httpx.TimeoutException:
-        logger.warning("Timeout fetching models from Roo Code API")
-        return _cached_roocode_models if _cached_roocode_models else {}
+        logger.warning("Timeout fetching models from Roo Code API, using default models")
+        if _cached_roocode_models:
+            return _cached_roocode_models
+        _cached_roocode_models = DEFAULT_ROOCODE_MODELS.copy()
+        _models_cache_time = time.time()
+        return _cached_roocode_models
     except Exception as e:  # noqa: BLE001
-        logger.warning(f"Failed to fetch models from API: {e}")
-        return _cached_roocode_models if _cached_roocode_models else {}
+        logger.warning(f"Failed to fetch models from API: {e}, using default models")
+        if _cached_roocode_models:
+            return _cached_roocode_models
+        _cached_roocode_models = DEFAULT_ROOCODE_MODELS.copy()
+        _models_cache_time = time.time()
+        return _cached_roocode_models
 
 
 async def fetch_qwencode_models(force_refresh: bool = False) -> dict[str, dict[str, Any]]:
