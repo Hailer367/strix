@@ -3,8 +3,9 @@ name: Strix Autonomous Dashboard
 on:
   workflow_dispatch:
     inputs:
+      # Time Configuration - More granular control
       duration_hours:
-        description: 'Maximum scan duration (hours)'
+        description: 'Scan duration (hours)'
         required: false
         default: '2'
         type: choice
@@ -13,20 +14,115 @@ on:
           - '2'
           - '3'
           - '4'
-          - '5'
           - '6'
-          - '7'
           - '8'
+          - '12'
+      duration_minutes:
+        description: 'Additional minutes (added to hours)'
+        required: false
+        default: '0'
+        type: choice
+        options:
+          - '0'
+          - '15'
+          - '30'
+          - '45'
+      
+      # Access Control
       enable_root_access:
         description: 'Enable root access for agent'
         required: false
         default: true
         type: boolean
+      access_level:
+        description: 'Access level (if not root)'
+        required: false
+        default: 'root'
+        type: choice
+        options:
+          - 'root'
+          - 'elevated'
+          - 'standard'
+      
+      # Agent Behavior
+      planning_depth:
+        description: 'Planning depth for analysis'
+        required: false
+        default: 'thorough'
+        type: choice
+        options:
+          - 'quick'
+          - 'balanced'
+          - 'thorough'
+      max_iterations:
+        description: 'Maximum agent iterations'
+        required: false
+        default: '300'
+        type: choice
+        options:
+          - '100'
+          - '200'
+          - '300'
+          - '500'
+          - '1000'
+      enable_multi_agent:
+        description: 'Enable multi-agent collaboration'
+        required: false
+        default: true
+        type: boolean
+      
+      # AI Provider
+      ai_provider:
+        description: 'AI provider to use'
+        required: false
+        default: 'roocode'
+        type: choice
+        options:
+          - 'roocode'
+          - 'qwencode'
+          - 'openai'
+          - 'anthropic'
+      
+      # Output Configuration
+      output_format:
+        description: 'Report output format'
+        required: false
+        default: 'markdown'
+        type: choice
+        options:
+          - 'markdown'
+          - 'json'
+          - 'html'
+      severity_threshold:
+        description: 'Minimum severity to report'
+        required: false
+        default: 'info'
+        type: choice
+        options:
+          - 'critical'
+          - 'high'
+          - 'medium'
+          - 'low'
+          - 'info'
+      
+      # Debugging
       debug_mode:
         description: 'Enable debug logging'
         required: false
         default: false
         type: boolean
+      
+      # Configuration Wait Time
+      config_wait_minutes:
+        description: 'Minutes to wait for dashboard configuration'
+        required: false
+        default: '30'
+        type: choice
+        options:
+          - '15'
+          - '30'
+          - '45'
+          - '60'
 
 env:
   STRIX_DASHBOARD_PORT: 8080
@@ -36,7 +132,7 @@ jobs:
   dashboard:
     name: Start Dashboard & Run Scan
     runs-on: ubuntu-latest
-    timeout-minutes: 480  # 8 hours max
+    timeout-minutes: 780  # 13 hours max (12h scan + 1h buffer)
     
     steps:
       - name: Checkout Repository
@@ -46,14 +142,13 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: 'pip'
       
       - name: Verify Docker Installation
         run: |
-          # Docker is pre-installed on GitHub runners, just verify it's working
           docker --version
           docker info || sudo systemctl start docker
-          # Add current user to docker group (may require newgrp for current session)
-          sudo usermod -aG docker $USER
+          sudo usermod -aG docker \$USER
       
       - name: Install Strix
         run: |
@@ -63,104 +158,116 @@ jobs:
       
       - name: Configure Environment
         env:
-          ROOCODE_TOKEN: ${{ secrets.ROOCODE_ACCESS_TOKEN }}
-          PERPLEXITY_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
+          ROOCODE_TOKEN: \${{ secrets.ROOCODE_ACCESS_TOKEN }}
+          QWENCODE_TOKEN: \${{ secrets.QWENCODE_ACCESS_TOKEN }}
+          PERPLEXITY_KEY: \${{ secrets.PERPLEXITY_API_KEY }}
+          OPENAI_KEY: \${{ secrets.LLM_API_KEY }}
         run: |
-          echo "STRIX_ROOT_ACCESS=${{ inputs.enable_root_access }}" >> $GITHUB_ENV
-          echo "STRIX_ACCESS_LEVEL=${{ inputs.enable_root_access && 'root' || 'standard' }}" >> $GITHUB_ENV
-          echo "STRIX_DEBUG=${{ inputs.debug_mode }}" >> $GITHUB_ENV
-          echo "STRIX_DURATION_HOURS=${{ inputs.duration_hours }}" >> $GITHUB_ENV
+          HOURS=\${{ inputs.duration_hours }}
+          MINUTES=\${{ inputs.duration_minutes }}
+          TOTAL_MINUTES=\$((HOURS * 60 + MINUTES))
+          echo "STRIX_DURATION_MINUTES=\$TOTAL_MINUTES" >> \$GITHUB_ENV
+          echo "STRIX_DURATION_HOURS=\${{ inputs.duration_hours }}" >> \$GITHUB_ENV
           
-          # Set up Roo Code token if available (check actual env var, not the secret directly)
-          if [ -n "$ROOCODE_TOKEN" ] && [ "$ROOCODE_TOKEN" != "" ]; then
-            echo "ROOCODE_ACCESS_TOKEN=$ROOCODE_TOKEN" >> $GITHUB_ENV
-            echo "Roo Code token configured"
+          if [ "\${{ inputs.enable_root_access }}" = "true" ]; then
+            echo "STRIX_ROOT_ACCESS=true" >> \$GITHUB_ENV
+            echo "STRIX_ACCESS_LEVEL=root" >> \$GITHUB_ENV
+          else
+            echo "STRIX_ROOT_ACCESS=false" >> \$GITHUB_ENV
+            echo "STRIX_ACCESS_LEVEL=\${{ inputs.access_level }}" >> \$GITHUB_ENV
           fi
           
-          # Set up Perplexity API key if available
-          if [ -n "$PERPLEXITY_KEY" ] && [ "$PERPLEXITY_KEY" != "" ]; then
-            echo "PERPLEXITY_API_KEY=$PERPLEXITY_KEY" >> $GITHUB_ENV
-            echo "Perplexity API key configured"
+          echo "STRIX_PLANNING_DEPTH=\${{ inputs.planning_depth }}" >> \$GITHUB_ENV
+          echo "STRIX_MAX_ITERATIONS=\${{ inputs.max_iterations }}" >> \$GITHUB_ENV
+          echo "STRIX_ENABLE_MULTI_AGENT=\${{ inputs.enable_multi_agent }}" >> \$GITHUB_ENV
+          echo "STRIX_OUTPUT_FORMAT=\${{ inputs.output_format }}" >> \$GITHUB_ENV
+          echo "STRIX_SEVERITY_THRESHOLD=\${{ inputs.severity_threshold }}" >> \$GITHUB_ENV
+          echo "STRIX_DEBUG=\${{ inputs.debug_mode }}" >> \$GITHUB_ENV
+          echo "STRIX_AI_PROVIDER=\${{ inputs.ai_provider }}" >> \$GITHUB_ENV
+          
+          if [ -n "\$ROOCODE_TOKEN" ] && [ "\$ROOCODE_TOKEN" != "" ]; then
+            echo "ROOCODE_ACCESS_TOKEN=\$ROOCODE_TOKEN" >> \$GITHUB_ENV
+            echo "::notice::Roo Code token configured"
+          fi
+          
+          if [ -n "\$QWENCODE_TOKEN" ] && [ "\$QWENCODE_TOKEN" != "" ]; then
+            echo "QWENCODE_ACCESS_TOKEN=\$QWENCODE_TOKEN" >> \$GITHUB_ENV
+            echo "::notice::Qwen Code token configured"
+          fi
+          
+          if [ -n "\$PERPLEXITY_KEY" ] && [ "\$PERPLEXITY_KEY" != "" ]; then
+            echo "PERPLEXITY_API_KEY=\$PERPLEXITY_KEY" >> \$GITHUB_ENV
+            echo "::notice::Perplexity API key configured"
+          fi
+          
+          if [ -n "\$OPENAI_KEY" ] && [ "\$OPENAI_KEY" != "" ]; then
+            echo "LLM_API_KEY=\$OPENAI_KEY" >> \$GITHUB_ENV
+            echo "::notice::LLM API key configured"
           fi
       
       - name: Calculate Timeout Minutes
         id: timeout
         run: |
-          DURATION_HOURS="${{ inputs.duration_hours }}"
-          TIMEOUT_MINUTES=$((DURATION_HOURS * 60))
-          echo "timeout_minutes=$TIMEOUT_MINUTES" >> $GITHUB_OUTPUT
-          echo "Scan timeout set to $TIMEOUT_MINUTES minutes ($DURATION_HOURS hours)"
+          HOURS=\${{ inputs.duration_hours }}
+          MINUTES=\${{ inputs.duration_minutes }}
+          TOTAL_MINUTES=\$((HOURS * 60 + MINUTES))
+          TIMEOUT_WITH_BUFFER=\$((TOTAL_MINUTES + 15))
+          echo "timeout_minutes=\$TIMEOUT_WITH_BUFFER" >> \$GITHUB_OUTPUT
+          echo "scan_minutes=\$TOTAL_MINUTES" >> \$GITHUB_OUTPUT
+          echo "::notice::Scan duration: \${TOTAL_MINUTES} minutes (\${HOURS}h \${MINUTES}m)"
       
       - name: Start Dashboard Server
         id: dashboard
         run: |
-          # Create a PID file location
           PIDFILE="/tmp/strix_dashboard.pid"
+          nohup poetry run python -m strix.dashboard.server --port \$STRIX_DASHBOARD_PORT > /tmp/dashboard.log 2>&1 &
+          DASHBOARD_PID=\$!
+          echo \$DASHBOARD_PID > "\$PIDFILE"
+          echo "dashboard_pid=\$DASHBOARD_PID" >> \$GITHUB_OUTPUT
           
-          # Start the dashboard server in background
-          nohup poetry run python -m strix.dashboard.server --port $STRIX_DASHBOARD_PORT > /tmp/dashboard.log 2>&1 &
-          DASHBOARD_PID=$!
-          echo $DASHBOARD_PID > "$PIDFILE"
-          echo "dashboard_pid=$DASHBOARD_PID" >> $GITHUB_OUTPUT
-          echo "Dashboard started with PID: $DASHBOARD_PID"
-          
-          # Wait for server to be ready
-          echo "Waiting for dashboard server to start..."
           SERVER_READY=false
           for i in {1..30}; do
-            if curl -s http://localhost:$STRIX_DASHBOARD_PORT/api/status > /dev/null 2>&1; then
-              echo "Dashboard server is ready!"
+            if curl -s http://localhost:\$STRIX_DASHBOARD_PORT/api/status > /dev/null 2>&1; then
               SERVER_READY=true
               break
             fi
-            echo "Attempt $i/30 - waiting..."
             sleep 2
           done
           
-          if [ "$SERVER_READY" = false ]; then
-            echo "Warning: Dashboard server may not be fully ready. Checking logs:"
+          if [ "\$SERVER_READY" = false ]; then
+            echo "::warning::Dashboard server may not be fully ready"
             cat /tmp/dashboard.log || true
           fi
       
       - name: Setup Cloudflare Tunnel
         id: tunnel
         run: |
-          # Create a PID file location
           TUNNEL_PIDFILE="/tmp/cloudflared.pid"
-          
-          # Install cloudflared
           curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
           
-          # Start tunnel and capture URL
-          nohup ./cloudflared tunnel --url http://localhost:$STRIX_DASHBOARD_PORT --no-autoupdate > /tmp/tunnel.log 2>&1 &
-          TUNNEL_PID=$!
-          echo $TUNNEL_PID > "$TUNNEL_PIDFILE"
-          echo "tunnel_pid=$TUNNEL_PID" >> $GITHUB_OUTPUT
-          echo "Cloudflare tunnel started with PID: $TUNNEL_PID"
+          nohup ./cloudflared tunnel --url http://localhost:\$STRIX_DASHBOARD_PORT --no-autoupdate > /tmp/tunnel.log 2>&1 &
+          TUNNEL_PID=\$!
+          echo \$TUNNEL_PID > "\$TUNNEL_PIDFILE"
+          echo "tunnel_pid=\$TUNNEL_PID" >> \$GITHUB_OUTPUT
           
-          # Wait for tunnel URL with retry logic
-          echo "Starting Cloudflare tunnel..."
           TUNNEL_URL=""
           for i in {1..12}; do
             sleep 5
-            # Try multiple grep patterns for URL extraction
-            TUNNEL_URL=$(grep -Eo 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/tunnel.log 2>/dev/null | head -1) || true
-            if [ -n "$TUNNEL_URL" ]; then
-              echo "Tunnel URL found: $TUNNEL_URL"
+            TUNNEL_URL=\$(grep -Eo 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/tunnel.log 2>/dev/null | head -1) || true
+            if [ -n "\$TUNNEL_URL" ]; then
               break
             fi
-            echo "Attempt $i/12 - waiting for tunnel URL..."
           done
           
-          if [ -z "$TUNNEL_URL" ]; then
-            echo "Failed to get tunnel URL after 60 seconds. Checking logs..."
+          if [ -z "\$TUNNEL_URL" ]; then
+            echo "::error::Failed to get tunnel URL"
             cat /tmp/tunnel.log
             exit 1
           fi
           
-          echo "tunnel_url=$TUNNEL_URL" >> $GITHUB_OUTPUT
-          echo "::notice title=Dashboard URL::$TUNNEL_URL"
+          echo "tunnel_url=\$TUNNEL_URL" >> \$GITHUB_OUTPUT
+          echo "::notice title=Dashboard URL::\$TUNNEL_URL"
       
       - name: Display Dashboard URL
         run: |
@@ -169,124 +276,96 @@ jobs:
           echo "=============================================="
           echo ""
           echo "  📍 Dashboard URL:"
-          echo "  ${{ steps.tunnel.outputs.tunnel_url }}"
+          echo "  \${{ steps.tunnel.outputs.tunnel_url }}"
           echo ""
-          echo "=============================================="
+          echo "  ⏱️  Duration: \${{ inputs.duration_hours }}h \${{ inputs.duration_minutes }}m"
+          echo "  🔐 Access Level: \${{ inputs.access_level }}"
+          echo "  📊 Planning Depth: \${{ inputs.planning_depth }}"
+          echo "  🤖 AI Provider: \${{ inputs.ai_provider }}"
           echo ""
-          echo "  Instructions:"
-          echo "  1. Open the URL above in your browser"
-          echo "  2. Login with your Roo Code account"
-          echo "  3. Configure your target and settings"
-          echo "  4. Click 'Configure and Fire' to start"
-          echo ""
-          echo "  The scan will run for up to ${{ inputs.duration_hours }} hours"
+          echo "  ⏳ Waiting up to \${{ inputs.config_wait_minutes }} minutes for configuration..."
           echo "=============================================="
       
       - name: Wait for Configuration
         run: |
-          echo "Waiting for user to configure and start scan..."
           CONFIG_READY_FILE="/tmp/strix_config_ready"
-          MAX_WAIT=$((60 * 30))  # 30 minutes max wait for configuration
+          MAX_WAIT=\$((60 * \${{ inputs.config_wait_minutes }}))
           WAITED=0
           
-          while [ ! -f "$CONFIG_READY_FILE" ] && [ $WAITED -lt $MAX_WAIT ]; do
+          while [ ! -f "\$CONFIG_READY_FILE" ] && [ \$WAITED -lt \$MAX_WAIT ]; do
             sleep 10
-            WAITED=$((WAITED + 10))
-            echo "Waiting for configuration... ($WAITED seconds)"
+            WAITED=\$((WAITED + 10))
+            echo "Waiting for configuration... (\$((WAITED / 60))m \$((WAITED % 60))s / \${{ inputs.config_wait_minutes }}m)"
           done
           
-          if [ ! -f "$CONFIG_READY_FILE" ]; then
-            echo "Configuration timeout. Please restart the workflow."
+          if [ ! -f "\$CONFIG_READY_FILE" ]; then
+            echo "::error::Configuration timeout"
             exit 1
           fi
-          
-          echo "Configuration received! Starting autonomous scan..."
       
       - name: Run Autonomous Scan
         env:
-          SCAN_TIMEOUT_MINUTES: ${{ steps.timeout.outputs.timeout_minutes }}
+          SCAN_TIMEOUT_MINUTES: \${{ steps.timeout.outputs.scan_minutes }}
         run: |
-          # Load configuration
           CONFIG_FILE="/tmp/strix_scan_config.json"
           
-          if [ -f "$CONFIG_FILE" ]; then
-            # Extract target from config
-            TARGET=$(jq -r '.targets.primary' "$CONFIG_FILE")
+          if [ -f "\$CONFIG_FILE" ]; then
+            TARGET=\$(jq -r '.targets.primary' "\$CONFIG_FILE")
             
-            if [ -n "$TARGET" ] && [ "$TARGET" != "null" ]; then
-              echo "Starting scan for target: $TARGET"
+            if [ -n "\$TARGET" ] && [ "\$TARGET" != "null" ]; then
+              [ -f "/tmp/strix_scan_config.env" ] && source /tmp/strix_scan_config.env
               
-              # Load environment from config
-              if [ -f "/tmp/strix_scan_config.env" ]; then
-                source /tmp/strix_scan_config.env
-              fi
+              STRIX_CMD="poetry run strix -n --target \"\$TARGET\" --run-name \"github-action-\$(date +%Y%m%d-%H%M%S)\""
+              [ "\${{ inputs.enable_root_access }}" = "true" ] && STRIX_CMD="\$STRIX_CMD --root-access"
+              STRIX_CMD="\$STRIX_CMD --access-level \${{ inputs.access_level }}"
               
-              # Calculate duration in minutes
-              DURATION_MINUTES=$((${STRIX_DURATION_HOURS:-2} * 60))
-              
-              # Build the command with optional root access flag
-              STRIX_CMD="poetry run strix -n --target \"$TARGET\" --run-name \"github-action-$(date +%Y%m%d-%H%M%S)\""
-              if [ "${{ inputs.enable_root_access }}" = "true" ]; then
-                STRIX_CMD="$STRIX_CMD --root-access"
-              fi
-              
-              # Run the scan with timeout
-              timeout "${SCAN_TIMEOUT_MINUTES}m" bash -c "$STRIX_CMD" || {
-                EXIT_CODE=$?
-                if [ $EXIT_CODE -eq 124 ]; then
-                  echo "Scan completed (reached time limit)"
-                  exit 0
-                else
-                  echo "Scan exited with code: $EXIT_CODE"
-                  exit $EXIT_CODE
-                fi
+              timeout "\${SCAN_TIMEOUT_MINUTES}m" bash -c "\$STRIX_CMD" || {
+                EXIT_CODE=\$?
+                [ \$EXIT_CODE -eq 124 ] && exit 0
+                exit \$EXIT_CODE
               }
             else
-              echo "No valid target found in configuration"
+              echo "::error::No valid target found"
               exit 1
             fi
           else
-            echo "Configuration file not found"
+            echo "::error::Configuration file not found"
             exit 1
           fi
-        timeout-minutes: 480
+        timeout-minutes: 720
+      
+      - name: Generate Summary
+        if: always()
+        run: |
+          echo "## 🦉 Strix Scan Summary" >> \$GITHUB_STEP_SUMMARY
+          echo "" >> \$GITHUB_STEP_SUMMARY
+          echo "### Configuration" >> \$GITHUB_STEP_SUMMARY
+          echo "- **Duration**: \${{ inputs.duration_hours }}h \${{ inputs.duration_minutes }}m" >> \$GITHUB_STEP_SUMMARY
+          echo "- **AI Provider**: \${{ inputs.ai_provider }}" >> \$GITHUB_STEP_SUMMARY
+          echo "- **Planning Depth**: \${{ inputs.planning_depth }}" >> \$GITHUB_STEP_SUMMARY
       
       - name: Upload Scan Results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: strix-scan-results
+          name: strix-scan-results-\${{ github.run_number }}
           path: strix_runs/
           retention-days: 30
           if-no-files-found: warn
       
+      - name: Upload Dashboard Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-logs-\${{ github.run_number }}
+          path: /tmp/*.log
+          retention-days: 7
+          if-no-files-found: ignore
+      
       - name: Cleanup
         if: always()
         run: |
-          echo "Cleaning up background processes..."
-          
-          # Kill dashboard server using PID file
-          if [ -f "/tmp/strix_dashboard.pid" ]; then
-            DASHBOARD_PID=$(cat /tmp/strix_dashboard.pid)
-            if kill -0 "$DASHBOARD_PID" 2>/dev/null; then
-              echo "Stopping dashboard server (PID: $DASHBOARD_PID)"
-              kill "$DASHBOARD_PID" || true
-            fi
-            rm -f /tmp/strix_dashboard.pid
-          fi
-          
-          # Kill cloudflared tunnel using PID file
-          if [ -f "/tmp/cloudflared.pid" ]; then
-            TUNNEL_PID=$(cat /tmp/cloudflared.pid)
-            if kill -0 "$TUNNEL_PID" 2>/dev/null; then
-              echo "Stopping cloudflare tunnel (PID: $TUNNEL_PID)"
-              kill "$TUNNEL_PID" || true
-            fi
-            rm -f /tmp/cloudflared.pid
-          fi
-          
-          # Fallback: kill any remaining processes by name
+          [ -f "/tmp/strix_dashboard.pid" ] && kill \$(cat /tmp/strix_dashboard.pid) 2>/dev/null || true
+          [ -f "/tmp/cloudflared.pid" ] && kill \$(cat /tmp/cloudflared.pid) 2>/dev/null || true
           pkill -f "strix.dashboard.server" || true
           pkill -f "cloudflared" || true
-          
-          echo "Cleanup completed"
