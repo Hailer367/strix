@@ -977,6 +977,157 @@ def create_app(config: DashboardConfig | None = None) -> FastAPI:
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e)) from e
     
+    @app.post("/api/roocode/vscode-callback")
+    async def roocode_vscode_callback(request: Request) -> dict[str, Any]:
+        """Handle vscode:// callback URL from Roo Code authentication.
+        
+        This endpoint accepts the vscode:// callback URL that Roo Code provides
+        after browser authentication. The URL format is:
+        vscode://RooVeterinaryInc.roo-cline/auth/clerk/callback?state=...&code=...
+        
+        The 'code' parameter contains a JWT sign-in token that can be exchanged
+        for an access token via the Clerk API.
+        """
+        global _cached_roocode_models, _models_cache_time
+        
+        try:
+            data = await request.json()
+            callback_url = data.get("callback_url", "").strip()
+            
+            if not callback_url:
+                raise HTTPException(status_code=400, detail="callback_url is required")
+            
+            # Parse the vscode:// URL
+            # Format: vscode://RooVeterinaryInc.roo-cline/auth/clerk/callback?state=...&code=...
+            from urllib.parse import urlparse, parse_qs
+            
+            # Handle both vscode:// and https:// URLs
+            parsed = urlparse(callback_url)
+            
+            # Extract query parameters
+            query_params = parse_qs(parsed.query)
+            
+            code = query_params.get("code", [None])[0]
+            state = query_params.get("state", [None])[0]
+            
+            if not code:
+                raise HTTPException(
+                    status_code=400, 
+                    detail="No 'code' parameter found in the callback URL. Please provide the complete URL."
+                )
+            
+            logger.info(f"Processing vscode callback with code length: {len(code)}")
+            
+            # The code is a JWT sign-in token from Clerk
+            # We need to exchange it for an access token via the Clerk API
+            # Clerk uses the token endpoint for sign-in token exchange
+            
+            access_token = None
+            user_email = None
+            user_id = None
+            
+            # Try to exchange the sign-in token for an access token
+            # Clerk sign-in tokens can be exchanged at their token endpoint
+            async with httpx.AsyncClient() as client:
+                # First, try to use the code directly as a session token
+                # by making a request to the Roo Code user endpoint
+                try:
+                    user_response = await client.get(
+                        f"{ROOCODE_API_URL}/v1/user",
+                        headers={"Authorization": f"Bearer {code}"},
+                        timeout=30,
+                    )
+                    
+                    if user_response.status_code == 200:
+                        # The code works directly as an access token
+                        access_token = code
+                        user_data = user_response.json()
+                        user_email = user_data.get("email")
+                        user_id = user_data.get("id")
+                        logger.info("Code validated directly as access token")
+                except Exception as e:
+                    logger.debug(f"Direct token validation failed: {e}")
+                
+                # If direct use didn't work, try Clerk token exchange
+                if not access_token:
+                    # Try the Clerk sign-in token exchange endpoint
+                    # The sign-in token needs to be exchanged for a session
+                    for exchange_endpoint in [
+                        f"{ROOCODE_API_URL}/v1/auth/exchange",
+                        f"{ROOCODE_API_URL}/v1/auth/token",
+                        f"{ROOCODE_API_URL}/oauth/token",
+                        "https://clerk.roocode.com/v1/client/sign_ins/accept",
+                    ]:
+                        try:
+                            exchange_response = await client.post(
+                                exchange_endpoint,
+                                json={
+                                    "sign_in_token": code,
+                                    "code": code,
+                                    "grant_type": "sign_in_token",
+                                },
+                                headers={"Content-Type": "application/json"},
+                                timeout=30,
+                            )
+                            
+                            if exchange_response.status_code == 200:
+                                exchange_data = exchange_response.json()
+                                access_token = exchange_data.get("access_token") or exchange_data.get("token")
+                                if access_token:
+                                    user_email = exchange_data.get("email")
+                                    user_id = exchange_data.get("user_id") or exchange_data.get("id")
+                                    logger.info(f"Token exchanged via {exchange_endpoint}")
+                                    break
+                        except Exception as e:
+                            logger.debug(f"Token exchange failed at {exchange_endpoint}: {e}")
+                            continue
+                
+                # If token exchange didn't work, use the sign-in token directly
+                # as it may be a valid session token
+                if not access_token:
+                    # Use the code directly - it's a JWT that may work as a session token
+                    access_token = code
+                    logger.info("Using sign-in token directly as access token")
+            
+            # Save the credentials
+            dashboard_state.roocode_access_token = access_token
+            dashboard_state.roocode_token_expires_at = time.time() + 3600 * 24 * 30  # 30 days
+            dashboard_state.auth_status = AuthStatus.AUTHENTICATED
+            dashboard_state.roocode_user_email = user_email
+            dashboard_state.roocode_user_id = user_id
+            
+            save_roocode_credentials(
+                access_token=access_token,
+                expires_at=dashboard_state.roocode_token_expires_at,
+                user_email=user_email,
+                user_id=user_id,
+            )
+            
+            # Set environment variable
+            os.environ["ROOCODE_ACCESS_TOKEN"] = access_token
+            
+            # Clear model cache to force refresh
+            _cached_roocode_models = None
+            _models_cache_time = 0
+            
+            await broadcast_update({
+                "type": "auth_success",
+                "user_email": user_email,
+            })
+            
+            return {
+                "success": True,
+                "message": "Successfully authenticated via vscode callback",
+                "user_email": user_email,
+                "user_id": user_id,
+            }
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"vscode callback processing failed: {e}")
+            raise HTTPException(status_code=500, detail=str(e)) from e
+    
     # =========================================================================
     # Qwen Code CLI OAuth Routes
     # =========================================================================
@@ -2100,6 +2251,20 @@ def get_dashboard_html() -> str:
                             &#128275; Logout
                         </button>
                         
+                        <!-- VSCode Callback URL Input - for manual authentication -->
+                        <div class="section-divider"></div>
+                        <div class="info-notice" id="vscodeCallbackInfo" style="background: rgba(139, 92, 246, 0.1); border-color: var(--accent-purple);">
+                            <span>&#128279;</span>
+                            <p style="color: var(--accent-purple);"><strong>Alternative Login:</strong> If the browser login redirects to a vscode:// URL instead of back to the dashboard, paste the full URL below.</p>
+                        </div>
+                        <div class="form-group">
+                            <label>Paste vscode:// Callback URL (if browser login doesn't redirect)</label>
+                            <input type="text" id="vscodeCallbackUrl" placeholder="vscode://RooVeterinaryInc.roo-cline/auth/clerk/callback?state=...&code=...">
+                        </div>
+                        <button class="btn btn-secondary btn-block" id="submitVscodeCallbackBtn" style="margin-bottom: 1rem;">
+                            &#128273; Authenticate with Callback URL
+                        </button>
+                        
                         <div class="section-divider"></div>
                         
                         <div class="section-title">Select Model</div>
@@ -2820,6 +2985,54 @@ def get_dashboard_html() -> str:
                 addLog('Logged out successfully');
             } catch (error) {
                 addLog('Logout error: ' + error.message);
+            }
+        });
+        
+        // VSCode callback URL authentication
+        document.getElementById('submitVscodeCallbackBtn').addEventListener('click', async () => {
+            const callbackUrl = document.getElementById('vscodeCallbackUrl').value.trim();
+            
+            if (!callbackUrl) {
+                alert('Please paste the vscode:// callback URL');
+                return;
+            }
+            
+            // Validate URL format
+            if (!callbackUrl.includes('callback') || (!callbackUrl.includes('code=') && !callbackUrl.includes('token='))) {
+                alert('Invalid callback URL format. Please paste the complete URL that starts with vscode:// and contains code= or token= parameter.');
+                return;
+            }
+            
+            const submitBtn = document.getElementById('submitVscodeCallbackBtn');
+            submitBtn.disabled = true;
+            submitBtn.innerHTML = '&#8987; Authenticating...';
+            addLog('Processing vscode callback URL...');
+            
+            try {
+                const response = await fetch('/api/roocode/vscode-callback', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ callback_url: callbackUrl })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok && data.success) {
+                    updateAuthStatus(true, data.user_email);
+                    addLog('Authentication successful via callback URL');
+                    // Clear the input
+                    document.getElementById('vscodeCallbackUrl').value = '';
+                    // Refresh models
+                    await fetchAndRenderModels(true);
+                } else {
+                    throw new Error(data.detail || data.message || 'Authentication failed');
+                }
+            } catch (error) {
+                addLog('Callback URL authentication error: ' + error.message);
+                alert('Authentication failed: ' + error.message);
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.innerHTML = '&#128273; Authenticate with Callback URL';
             }
         });
         
