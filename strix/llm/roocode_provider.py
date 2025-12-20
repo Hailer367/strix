@@ -195,10 +195,13 @@ class RooCodeAuthHandler(BaseHTTPRequestHandler):
                        display: flex; justify-content: center; align-items: center; height: 100vh;
                        margin: 0; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); }}
                 .container {{ text-align: center; padding: 40px; background: rgba(255,255,255,0.1);
-                             border-radius: 16px; backdrop-filter: blur(10px); }}
+                             border-radius: 16px; backdrop-filter: blur(10px); max-width: 500px; }}
                 h1 {{ color: #ef4444; margin-bottom: 16px; }}
                 p {{ color: #e5e5e5; }}
                 .icon {{ font-size: 64px; margin-bottom: 20px; }}
+                .hint {{ margin-top: 20px; padding: 15px; background: rgba(139, 92, 246, 0.2);
+                        border-radius: 8px; border: 1px solid #8b5cf6; }}
+                .hint p {{ color: #c4b5fd; font-size: 0.875rem; }}
             </style>
         </head>
         <body>
@@ -206,7 +209,10 @@ class RooCodeAuthHandler(BaseHTTPRequestHandler):
                 <div class="icon">❌</div>
                 <h1>Authentication Failed</h1>
                 <p>Error: {error_msg}</p>
-                <p style="margin-top: 20px;">Please try again or check your credentials.</p>
+                <div class="hint">
+                    <p><strong>💡 Tip:</strong> If your browser redirected to a vscode:// URL, copy that URL and paste it into the "Paste vscode:// Callback URL" field in the Strix Dashboard.</p>
+                </div>
+                <p style="margin-top: 20px;">Please try again or use the alternative callback URL method.</p>
             </div>
         </body>
         </html>
