@@ -1,0 +1,129 @@
+<cve_hunting_module>
+    <overview>
+        This module provides specialized guidance for CVE/Exploit-based vulnerability testing.
+        It helps you leverage known vulnerabilities and exploits for identified technologies.
+    </overview>
+
+    <workflow>
+        <step order="1" name="Technology Identification">
+            During reconnaissance, identify technologies and their versions:
+            - Web server headers (nginx/1.18.0, Apache/2.4.49)
+            - CMS versions (WordPress 5.9.3, Drupal 9.3.0)
+            - Framework versions (Spring Boot 2.6.6, Django 4.0)
+            - JavaScript libraries (jQuery 3.5.1, Angular 12.0)
+            - Backend services (Redis, MongoDB, Elasticsearch)
+        </step>
+        
+        <step order="2" name="CVE Query">
+            Use get_technology_vulnerabilities() for comprehensive results:
+            - Queries NVD for known CVEs
+            - Searches Exploit-DB for working exploits
+            - Checks GitHub Security Advisories
+            - Returns prioritized testing recommendations
+            
+            For specific CVE details, use get_cve_details().
+        </step>
+        
+        <step order="3" name="Exploit Search">
+            Use search_exploits() to find working PoCs:
+            - Search by CVE ID for specific exploits
+            - Search by technology name for related exploits
+            - Check GitHub repositories for recent PoCs
+            - Look for Metasploit modules
+        </step>
+        
+        <step order="4" name="Vulnerability Testing">
+            Test identified CVEs in priority order:
+            1. CVEs with public exploits (highest priority)
+            2. CRITICAL/HIGH severity CVEs
+            3. CVEs matching the exact version
+            4. Recently published CVEs (may not be patched)
+        </step>
+    </workflow>
+
+    <cve_testing_priorities>
+        <priority level="critical" action="test_immediately">
+            - CVE has working public exploit
+            - CVSS score >= 9.0
+            - RCE, Auth Bypass, or SQLi vulnerability
+            - Affects exact version identified
+        </priority>
+        
+        <priority level="high" action="test_soon">
+            - CVE has proof-of-concept available
+            - CVSS score >= 7.0
+            - SSRF, XSS, or IDOR vulnerability
+            - Version in vulnerable range
+        </priority>
+        
+        <priority level="medium" action="test_if_time">
+            - CVE documented but no public exploit
+            - CVSS score >= 4.0
+            - Information disclosure or DoS
+        </priority>
+    </cve_testing_priorities>
+
+    <common_technology_cves>
+        <nginx>
+            - CVE-2021-23017: DNS resolver vulnerability (DoS/potential RCE)
+            - CVE-2017-7529: Integer overflow in range filter
+            - CVE-2013-4547: Security restriction bypass
+            Check: nginx version headers, error pages
+        </nginx>
+        
+        <apache>
+            - CVE-2021-41773/CVE-2021-42013: Path traversal and RCE (Apache 2.4.49-2.4.50)
+            - CVE-2021-40438: SSRF in mod_proxy
+            - CVE-2019-0211: Local privilege escalation
+            Check: Server headers, mod_status, directory listings
+        </apache>
+        
+        <wordpress>
+            - Plugin vulnerabilities (most common attack vector)
+            - CVE-2022-21661: SQL injection in WP_Query
+            - CVE-2021-29447: XXE in media library
+            Check: wp-admin, wp-includes version, installed plugins
+        </wordpress>
+        
+        <spring>
+            - CVE-2022-22965: Spring4Shell RCE
+            - CVE-2022-22963: Spring Cloud Function SpEL RCE
+            - CVE-2020-5421: RFD attack
+            Check: /actuator endpoints, error pages, Whitelabel
+        </spring>
+        
+        <log4j>
+            - CVE-2021-44228: Log4Shell RCE
+            - CVE-2021-45046: DoS and RCE bypass
+            - CVE-2021-44832: RCE via JDBC Appender
+            Check: Any Java application with user input in logs
+        </log4j>
+    </common_technology_cves>
+
+    <exploit_adaptation>
+        When using found exploits:
+        1. Review the exploit code for understanding
+        2. Identify required parameters (target, payload, headers)
+        3. Adapt URLs and endpoints for the target
+        4. Modify payloads for the specific environment
+        5. Test in controlled manner to confirm vulnerability
+        6. Document successful exploitation as PoC
+        
+        Note: Some exploits may need modification for:
+        - Different URL structures
+        - Custom headers or authentication
+        - WAF bypass techniques
+        - Environment-specific payloads
+    </exploit_adaptation>
+
+    <reporting>
+        When documenting CVE-based findings:
+        - Include CVE ID and description
+        - Reference CVSS score and severity
+        - Document the exact version tested
+        - Provide step-by-step reproduction
+        - Include working PoC/exploit output
+        - Link to original vulnerability report
+        - Suggest remediation (patch version, workarounds)
+    </reporting>
+</cve_hunting_module>
