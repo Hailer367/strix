@@ -34,7 +34,7 @@
 <br>
 
 > [!TIP]
-> **New!** Strix now features **Roo Code Cloud Integration** for free AI models, **Root Access Mode** for unrestricted terminal commands, and **GitHub Actions Dashboard** for autonomous bug bounty automation!
+> **New!** Strix now features **Roo Code Cloud Integration** for free AI models, **Qwen Code CLI Integration** for additional free models, **Root Access Mode** for unrestricted terminal commands, and **GitHub Actions Dashboard** for autonomous bug bounty automation!
 
 ---
 
@@ -46,6 +46,7 @@
 - [Quick Start](#-quick-start)
 - [Installation](#installation)
 - [Roo Code Cloud Integration](#-roo-code-cloud-integration)
+- [Qwen Code CLI Integration](#-qwen-code-cli-integration)
 - [Root Access Mode](#-root-access-mode)
 - [GitHub Actions & Dashboard](#-github-actions--autonomous-dashboard)
 - [Configuration](#%EF%B8%8F-configuration)
@@ -186,6 +187,16 @@ Roo Code Cloud provides **free access to premium AI models** without requiring A
 | `grok-code-fast-1` | Fast coding model | 262,000 tokens | Quick scans, high-speed iterations |
 | `roo/code-supernova` | Advanced reasoning model | 200,000 tokens | Complex reasoning, multimodal tasks |
 
+### VSCode Callback URL Authentication
+
+If the browser login redirects to a `vscode://` URL instead of back to the dashboard (which can happen when Roo Code detects you're coming from an IDE context), you can manually authenticate:
+
+1. Copy the full `vscode://RooVeterinaryInc.roo-cline/auth/clerk/callback?...` URL
+2. Paste it into the "Paste vscode:// Callback URL" field in the dashboard
+3. Click "Authenticate with Callback URL"
+
+The dashboard will extract the authentication token and complete the login process.
+
 ### Usage
 
 ```bash
@@ -220,6 +231,62 @@ export STRIX_LLM="roocode/grok-code-fast-1"
 2. **Token Storage**: Credentials are securely stored in `~/.strix/roocode_config.json` with proper permissions
 3. **API Integration**: Strix uses LiteLLM with OpenRouter-compatible endpoints to communicate with Roo Code Cloud
 4. **Auto-Refresh**: Tokens are automatically refreshed before expiration
+
+---
+
+## Qwen Code CLI Integration
+
+Qwen Code CLI provides **free access to Alibaba's Qwen AI models** with generous daily limits. This integration is perfect for users who want an alternative to Roo Code Cloud.
+
+### Features
+
+- **2,000 Free Requests/Day** - Generous daily limit for extensive testing
+- **Fast Models** - Optimized for code generation and security analysis
+- **Multiple Endpoints** - Support for DashScope and ModelScope APIs
+- **Easy Setup** - Simple API key configuration
+
+### Available Models
+
+| Model | Description | Context Window | Best For |
+|-------|-------------|----------------|----------|
+| `qwen3-coder-plus` | High-performance coding model | 262,000 tokens | Complex tasks, multi-step analysis |
+| `qwen3-coder` | Balanced coding model | 131,000 tokens | General development, quick iterations |
+
+### Usage
+
+```bash
+# Set up Qwen Code API key
+export QWENCODE_ACCESS_TOKEN="your-api-key"
+export QWENCODE_API_BASE="https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+# Run scans with Qwen Code
+strix --qwencode --target https://your-app.com
+
+# Specify a particular model
+strix --qwencode-model qwen3-coder-plus --target ./my-project
+```
+
+### Getting an API Key
+
+1. Sign up at [Alibaba Cloud DashScope](https://dashscope.aliyun.com/)
+2. Navigate to API Keys section
+3. Create a new API key
+4. Set it as `QWENCODE_ACCESS_TOKEN` environment variable
+
+### Environment Variables
+
+```bash
+# Qwen Code CLI Configuration
+export QWENCODE_ACCESS_TOKEN="your-api-key"
+export QWENCODE_API_BASE="https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+# Alternative: ModelScope endpoint
+export QWENCODE_API_BASE="https://api-inference.modelscope.cn/v1"
+
+# Enable via environment
+export STRIX_USE_QWENCODE="true"
+export STRIX_LLM="qwencode/qwen3-coder-plus"
+```
 
 ---
 
@@ -348,7 +415,9 @@ The dashboard allows you to configure:
 
 #### Authentication & AI
 - **Roo Code Login** - Authenticate with your Roo Code Cloud account
-- **AI Model Selection** - Choose from available Roo Code models
+- **VSCode Callback URL** - Alternative authentication method for vscode:// redirects
+- **Qwen Code Login** - Authenticate with your Qwen Code CLI account
+- **AI Model Selection** - Choose from available Roo Code or Qwen Code models
 - **Custom API Keys** - Use your own OpenAI/Anthropic keys if preferred
 
 #### Target Configuration
@@ -358,10 +427,20 @@ The dashboard allows you to configure:
 - **IP Addresses** - Direct IP targets for network testing
 
 #### Execution Settings
-- **Timeframe** - Maximum duration for the autonomous run
+- **Timeframe** - Maximum duration for the autonomous run (configurable in minutes/hours)
 - **Root Access** - Enable/disable root access mode
 - **Access Level** - standard, elevated, or root
 - **Max Iterations** - Limit on agent iterations
+- **Rate Limiting** - Control requests per second (1-50 RPS)
+
+#### Agent Behavior
+- **Planning Depth** - Quick, balanced, or thorough analysis
+- **Memory Strategy** - Minimal, adaptive, or full context retention
+- **Multi-Agent Mode** - Enable specialized sub-agents for complex testing
+- **Browser Automation** - Enable/disable headless browser testing
+- **Proxy Interception** - Enable/disable HTTP traffic capture
+- **Attack Chaining** - Automatically chain discovered vulnerabilities
+- **Auto-Pivot** - Automatically pivot on findings to discover related issues
 
 #### Testing Parameters
 - **Custom Instructions** - Specific guidance for the agent
@@ -414,6 +493,8 @@ export PERPLEXITY_API_KEY="your-key"       # Enable real-time web search
 |----------|-------|-------------|------|
 | **Roo Code Cloud** | `roocode/grok-code-fast-1` | Excellent | Free |
 | **Roo Code Cloud** | `roocode/roo/code-supernova` | Excellent | Free |
+| **Qwen Code CLI** | `qwencode/qwen3-coder-plus` | Excellent | Free |
+| **Qwen Code CLI** | `qwencode/qwen3-coder` | Good | Free |
 | **OpenAI** | `openai/gpt-5` | Excellent | $$$ |
 | **Anthropic** | `anthropic/claude-sonnet-4-5` | Excellent | $$$ |
 | **Local** | `ollama/llama3:70b` | Good | Free |
