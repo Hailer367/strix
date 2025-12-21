@@ -323,6 +323,26 @@ async def warm_up_llm() -> None:
 
         llm_timeout = int(os.getenv("LLM_TIMEOUT", "600"))
 
+        # Handle Qwen Code provider - convert qwencode/ prefix to proper LiteLLM format
+        if model_name.startswith("qwencode/"):
+            from strix.llm.qwencode_provider import configure_qwencode_for_litellm, is_qwencode_model
+            try:
+                model_name, api_key, api_base = configure_qwencode_for_litellm(model_name)
+            except RuntimeError as e:
+                # If not authenticated, skip warm-up (will be handled by dashboard auth)
+                console.print(f"[dim yellow]⚠️  Qwen Code warm-up skipped: {e}[/]")
+                return
+        
+        # Handle Roo Code provider - convert roocode/ prefix to proper LiteLLM format
+        elif model_name.startswith("roocode/"):
+            from strix.llm.roocode_provider import configure_roocode_for_litellm, is_roocode_model
+            try:
+                model_name, api_key, api_base = configure_roocode_for_litellm(model_name)
+            except RuntimeError as e:
+                # If not authenticated, skip warm-up (will be handled by dashboard auth)
+                console.print(f"[dim yellow]⚠️  Roo Code warm-up skipped: {e}[/]")
+                return
+
         completion_kwargs: dict[str, Any] = {
             "model": model_name,
             "messages": test_messages,
