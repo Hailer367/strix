@@ -1,9 +1,15 @@
-name: Strix Autonomous Dashboard
+name: Strix Autonomous Dashboard (Qwen Code)
+
+# Modified: Qwen Code CLI is now the sole AI provider
+# Authentication Options:
+# 1. Qwen OAuth: 2,000 requests/day (requires China access or VPN)
+# 2. OpenRouter: 1,000 free requests/day worldwide (recommended for GitHub Actions)
+# 3. DashScope International: Pay-as-you-go with free credits
 
 on:
   workflow_dispatch:
     inputs:
-      # Time Configuration - More granular control
+      # Time Configuration
       duration_hours:
         description: 'Scan duration (hours)'
         required: false
@@ -71,17 +77,30 @@ on:
         default: true
         type: boolean
       
-      # AI Provider
-      ai_provider:
-        description: 'AI provider to use'
+      # Qwen Code API Provider
+      api_provider:
+        description: 'Qwen Code API provider'
         required: false
-        default: 'roocode'
+        default: 'openrouter'
         type: choice
         options:
-          - 'roocode'
-          - 'qwencode'
-          - 'openai'
-          - 'anthropic'
+          - 'openrouter'      # 1,000 free requests/day worldwide
+          - 'dashscope_intl'  # Alibaba Cloud International
+          - 'dashscope'       # Alibaba Cloud China (requires China access)
+          - 'modelscope'      # ModelScope China (2,000 free calls/day)
+          - 'qwen_oauth'      # Direct Qwen OAuth (requires China access)
+      
+      # Model Selection
+      qwen_model:
+        description: 'Qwen Code model to use'
+        required: false
+        default: 'qwen/qwen3-coder:free'
+        type: choice
+        options:
+          - 'qwen/qwen3-coder:free'                # OpenRouter free tier
+          - 'qwen3-coder-plus'                     # DashScope
+          - 'qwen3-coder-plus-latest'              # DashScope latest
+          - 'Qwen/Qwen3-Coder-480B-A35B-Instruct'  # ModelScope
       
       # Output Configuration
       output_format:
@@ -126,11 +145,11 @@ on:
 
 env:
   STRIX_DASHBOARD_PORT: 8080
-  STRIX_USE_ROOCODE: "true"
+  STRIX_USE_QWENCODE: "true"
 
 jobs:
   dashboard:
-    name: Start Dashboard & Run Scan
+    name: Start Dashboard & Run Scan (Qwen Code)
     runs-on: ubuntu-latest
     timeout-minutes: 780  # 13 hours max (12h scan + 1h buffer)
     
@@ -148,7 +167,6 @@ jobs:
         run: |
           docker --version
           docker info || sudo systemctl start docker
-          # Docker group membership is already configured in GitHub Actions runners
       
       - name: Install Strix
         run: |
@@ -156,19 +174,21 @@ jobs:
           pip install poetry
           poetry install
       
-      - name: Configure Environment
+      - name: Configure Qwen Code Environment
         env:
-          ROOCODE_TOKEN: ${{ secrets.ROOCODE_ACCESS_TOKEN }}
           QWENCODE_TOKEN: ${{ secrets.QWENCODE_ACCESS_TOKEN }}
+          OPENROUTER_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          DASHSCOPE_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
           PERPLEXITY_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
-          OPENAI_KEY: ${{ secrets.LLM_API_KEY }}
         run: |
+          # Calculate total duration
           HOURS=${{ inputs.duration_hours }}
           MINUTES=${{ inputs.duration_minutes }}
           TOTAL_MINUTES=$((HOURS * 60 + MINUTES))
           echo "STRIX_DURATION_MINUTES=$TOTAL_MINUTES" >> $GITHUB_ENV
           echo "STRIX_DURATION_HOURS=${{ inputs.duration_hours }}" >> $GITHUB_ENV
           
+          # Access configuration
           if [ "${{ inputs.enable_root_access }}" = "true" ]; then
             echo "STRIX_ROOT_ACCESS=true" >> $GITHUB_ENV
             echo "STRIX_ACCESS_LEVEL=root" >> $GITHUB_ENV
@@ -177,32 +197,79 @@ jobs:
             echo "STRIX_ACCESS_LEVEL=${{ inputs.access_level }}" >> $GITHUB_ENV
           fi
           
+          # Agent behavior
           echo "STRIX_PLANNING_DEPTH=${{ inputs.planning_depth }}" >> $GITHUB_ENV
           echo "STRIX_MAX_ITERATIONS=${{ inputs.max_iterations }}" >> $GITHUB_ENV
           echo "STRIX_ENABLE_MULTI_AGENT=${{ inputs.enable_multi_agent }}" >> $GITHUB_ENV
           echo "STRIX_OUTPUT_FORMAT=${{ inputs.output_format }}" >> $GITHUB_ENV
           echo "STRIX_SEVERITY_THRESHOLD=${{ inputs.severity_threshold }}" >> $GITHUB_ENV
           echo "STRIX_DEBUG=${{ inputs.debug_mode }}" >> $GITHUB_ENV
-          echo "STRIX_AI_PROVIDER=${{ inputs.ai_provider }}" >> $GITHUB_ENV
           
-          if [ -n "$ROOCODE_TOKEN" ] && [ "$ROOCODE_TOKEN" != "" ]; then
-            echo "ROOCODE_ACCESS_TOKEN=$ROOCODE_TOKEN" >> $GITHUB_ENV
-            echo "::notice::Roo Code token configured"
-          fi
+          # API Provider and Model configuration
+          API_PROVIDER="${{ inputs.api_provider }}"
+          QWEN_MODEL="${{ inputs.qwen_model }}"
           
-          if [ -n "$QWENCODE_TOKEN" ] && [ "$QWENCODE_TOKEN" != "" ]; then
-            echo "QWENCODE_ACCESS_TOKEN=$QWENCODE_TOKEN" >> $GITHUB_ENV
-            echo "::notice::Qwen Code token configured"
-          fi
+          echo "STRIX_AI_PROVIDER=qwencode" >> $GITHUB_ENV
+          echo "QWENCODE_API_PROVIDER=$API_PROVIDER" >> $GITHUB_ENV
           
+          # Set API endpoint based on provider
+          case "$API_PROVIDER" in
+            "openrouter")
+              echo "OPENAI_BASE_URL=https://openrouter.ai/api/v1" >> $GITHUB_ENV
+              echo "QWENCODE_API_BASE=https://openrouter.ai/api/v1" >> $GITHUB_ENV
+              # Use OpenRouter API key
+              if [ -n "$OPENROUTER_KEY" ] && [ "$OPENROUTER_KEY" != "" ]; then
+                echo "OPENAI_API_KEY=$OPENROUTER_KEY" >> $GITHUB_ENV
+                echo "QWENCODE_ACCESS_TOKEN=$OPENROUTER_KEY" >> $GITHUB_ENV
+                echo "::notice::OpenRouter API key configured (1,000 free requests/day)"
+              fi
+              ;;
+            "dashscope_intl")
+              echo "OPENAI_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1" >> $GITHUB_ENV
+              echo "QWENCODE_API_BASE=https://dashscope-intl.aliyuncs.com/compatible-mode/v1" >> $GITHUB_ENV
+              if [ -n "$DASHSCOPE_KEY" ] && [ "$DASHSCOPE_KEY" != "" ]; then
+                echo "OPENAI_API_KEY=$DASHSCOPE_KEY" >> $GITHUB_ENV
+                echo "QWENCODE_ACCESS_TOKEN=$DASHSCOPE_KEY" >> $GITHUB_ENV
+                echo "::notice::DashScope International API key configured"
+              fi
+              ;;
+            "dashscope")
+              echo "OPENAI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1" >> $GITHUB_ENV
+              echo "QWENCODE_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1" >> $GITHUB_ENV
+              if [ -n "$DASHSCOPE_KEY" ] && [ "$DASHSCOPE_KEY" != "" ]; then
+                echo "OPENAI_API_KEY=$DASHSCOPE_KEY" >> $GITHUB_ENV
+                echo "QWENCODE_ACCESS_TOKEN=$DASHSCOPE_KEY" >> $GITHUB_ENV
+                echo "::notice::DashScope China API key configured"
+              fi
+              ;;
+            "modelscope")
+              echo "OPENAI_BASE_URL=https://api-inference.modelscope.cn/v1" >> $GITHUB_ENV
+              echo "QWENCODE_API_BASE=https://api-inference.modelscope.cn/v1" >> $GITHUB_ENV
+              if [ -n "$QWENCODE_TOKEN" ] && [ "$QWENCODE_TOKEN" != "" ]; then
+                echo "OPENAI_API_KEY=$QWENCODE_TOKEN" >> $GITHUB_ENV
+                echo "QWENCODE_ACCESS_TOKEN=$QWENCODE_TOKEN" >> $GITHUB_ENV
+                echo "::notice::ModelScope API key configured (2,000 free calls/day)"
+              fi
+              ;;
+            "qwen_oauth")
+              echo "OPENAI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1" >> $GITHUB_ENV
+              echo "QWENCODE_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1" >> $GITHUB_ENV
+              if [ -n "$QWENCODE_TOKEN" ] && [ "$QWENCODE_TOKEN" != "" ]; then
+                echo "OPENAI_API_KEY=$QWENCODE_TOKEN" >> $GITHUB_ENV
+                echo "QWENCODE_ACCESS_TOKEN=$QWENCODE_TOKEN" >> $GITHUB_ENV
+                echo "::notice::Qwen OAuth token configured (2,000 requests/day)"
+              fi
+              ;;
+          esac
+          
+          # Model configuration
+          echo "OPENAI_MODEL=$QWEN_MODEL" >> $GITHUB_ENV
+          echo "STRIX_LLM=qwencode/$QWEN_MODEL" >> $GITHUB_ENV
+          
+          # Perplexity for web search
           if [ -n "$PERPLEXITY_KEY" ] && [ "$PERPLEXITY_KEY" != "" ]; then
             echo "PERPLEXITY_API_KEY=$PERPLEXITY_KEY" >> $GITHUB_ENV
-            echo "::notice::Perplexity API key configured"
-          fi
-          
-          if [ -n "$OPENAI_KEY" ] && [ "$OPENAI_KEY" != "" ]; then
-            echo "LLM_API_KEY=$OPENAI_KEY" >> $GITHUB_ENV
-            echo "::notice::LLM API key configured"
+            echo "::notice::Perplexity API key configured for web search"
           fi
       
       - name: Calculate Timeout Minutes
@@ -214,7 +281,7 @@ jobs:
           TIMEOUT_WITH_BUFFER=$((TOTAL_MINUTES + 15))
           echo "timeout_minutes=$TIMEOUT_WITH_BUFFER" >> $GITHUB_OUTPUT
           echo "scan_minutes=$TOTAL_MINUTES" >> $GITHUB_OUTPUT
-          echo "::notice::Scan duration: ${TOTAL_MINUTES} minutes (${HOURS}h ${MINUTES}m)"
+          echo "::notice title=Scan Duration::${TOTAL_MINUTES} minutes (${HOURS}h ${MINUTES}m)"
       
       - name: Start Dashboard Server
         id: dashboard
@@ -273,6 +340,7 @@ jobs:
         run: |
           echo "=============================================="
           echo "  🦉 STRIX AUTONOMOUS DASHBOARD"
+          echo "  Powered by Qwen Code"
           echo "=============================================="
           echo ""
           echo "  📍 Dashboard URL:"
@@ -281,7 +349,14 @@ jobs:
           echo "  ⏱️  Duration: ${{ inputs.duration_hours }}h ${{ inputs.duration_minutes }}m"
           echo "  🔐 Access Level: ${{ inputs.access_level }}"
           echo "  📊 Planning Depth: ${{ inputs.planning_depth }}"
-          echo "  🤖 AI Provider: ${{ inputs.ai_provider }}"
+          echo "  🤖 API Provider: ${{ inputs.api_provider }}"
+          echo "  🧠 Model: ${{ inputs.qwen_model }}"
+          echo ""
+          echo "  📝 API Provider Guide:"
+          echo "  • openrouter: 1,000 free requests/day worldwide"
+          echo "  • dashscope_intl: Alibaba Cloud (international)"
+          echo "  • modelscope: 2,000 free calls/day (China)"
+          echo "  • qwen_oauth: 2,000 requests/day (China/VPN)"
           echo ""
           echo "  ⏳ Waiting up to ${{ inputs.config_wait_minutes }} minutes for configuration..."
           echo "=============================================="
@@ -341,8 +416,17 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Configuration" >> $GITHUB_STEP_SUMMARY
           echo "- **Duration**: ${{ inputs.duration_hours }}h ${{ inputs.duration_minutes }}m" >> $GITHUB_STEP_SUMMARY
-          echo "- **AI Provider**: ${{ inputs.ai_provider }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **AI Provider**: Qwen Code (${{ inputs.api_provider }})" >> $GITHUB_STEP_SUMMARY
+          echo "- **Model**: ${{ inputs.qwen_model }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Planning Depth**: ${{ inputs.planning_depth }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### API Provider Information" >> $GITHUB_STEP_SUMMARY
+          echo "| Provider | Free Tier | Access |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-----------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| OpenRouter | 1,000 requests/day | Worldwide |" >> $GITHUB_STEP_SUMMARY
+          echo "| DashScope Intl | Pay-as-you-go | Worldwide |" >> $GITHUB_STEP_SUMMARY
+          echo "| ModelScope | 2,000 calls/day | China |" >> $GITHUB_STEP_SUMMARY
+          echo "| Qwen OAuth | 2,000 requests/day | China/VPN |" >> $GITHUB_STEP_SUMMARY
       
       - name: Upload Scan Results
         if: always()
