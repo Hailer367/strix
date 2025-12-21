@@ -443,8 +443,11 @@ SCAN_MODES = {
 API_ENDPOINTS = {
     "qwen_oauth": {
         "name": "Qwen OAuth (Recommended)",
-        "description": "Direct authentication via qwen.ai - 2,000 requests/day, 60 req/min, no token limits, no regional limits",
+        "description": "OAuth Device Authorization via qwen.ai - 2,000 requests/day, 60 req/min, no token limits, no regional limits",
         "url": "https://chat.qwen.ai/api/v1",
+        "auth_url": "https://chat.qwen.ai/authorize",
+        "device_code_url": "https://chat.qwen.ai/api/v1/device/code",
+        "device_token_url": "https://chat.qwen.ai/api/v1/device/token",
         "free_tier": "2,000 requests/day",
         "recommended": True,
     },
