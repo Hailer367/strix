@@ -4,6 +4,8 @@ Dashboard Configuration Models
 Pydantic models for dashboard configuration and scan parameters.
 Enhanced with comprehensive Strix agent configuration options.
 
+Modified: Qwen Code CLI is now the sole AI provider (Roo Code removed).
+
 Designed for GitHub Actions CI/CD workflows with web dashboard interface.
 """
 
@@ -24,8 +26,7 @@ GITHUB_WORKFLOW = os.getenv("GITHUB_WORKFLOW", "")
 
 
 class AIProvider(str, Enum):
-    """Supported AI providers."""
-    ROOCODE = "roocode"
+    """Supported AI providers - Qwen Code is the primary/default provider."""
     QWENCODE = "qwencode"
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
@@ -52,7 +53,7 @@ class ScanStatus(str, Enum):
 
 
 class AuthStatus(str, Enum):
-    """Authentication status for Roo Code."""
+    """Authentication status for Qwen Code."""
     NOT_AUTHENTICATED = "not_authenticated"
     AUTHENTICATING = "authenticating"
     AUTHENTICATED = "authenticated"
@@ -67,40 +68,40 @@ class ScanMode(str, Enum):
     COMBINED = "combined"    # Full scope testing
 
 
-class RooCodeConfig(BaseModel):
-    """Roo Code Cloud configuration."""
-    enabled: bool = True
-    model: str = "grok-code-fast-1"
-    access_token: str | None = None
-    refresh_token: str | None = None
-    expires_at: float | None = None
-    user_email: str | None = None
-    user_id: str | None = None
-    auto_authenticate: bool = True
-    auth_status: AuthStatus = AuthStatus.NOT_AUTHENTICATED
-
-
 class QwenCodeConfig(BaseModel):
-    """Qwen Code CLI configuration."""
-    enabled: bool = False
+    """Qwen Code CLI configuration - Primary AI Provider.
+    
+    Qwen Code offers:
+    - 2,000 free requests per day (via Qwen OAuth in China)
+    - 60 requests per minute rate limit
+    - No token limits
+    - Multiple endpoint options (DashScope, ModelScope, OpenRouter)
+    
+    For international users outside China:
+    - Use OpenRouter for free tier (1,000 requests/day)
+    - Use QwenBridge proxy solution for full 2,000 requests
+    - Or configure VPN to access qwen.ai directly
+    """
+    enabled: bool = True
     model: str = "qwen3-coder-plus"
     access_token: str | None = None
     refresh_token: str | None = None
     expires_at: float | None = None
     user_email: str | None = None
     user_id: str | None = None
-    api_endpoint: str | None = None
+    api_endpoint: str | None = None  # DashScope, ModelScope, OpenRouter, etc.
     auto_authenticate: bool = True
     auth_status: AuthStatus = AuthStatus.NOT_AUTHENTICATED
+    # Provider type for different API endpoints
+    api_provider: str = "qwen_oauth"  # qwen_oauth, dashscope, modelscope, openrouter
 
 
 class AIConfig(BaseModel):
-    """AI provider configuration."""
-    provider: AIProvider = AIProvider.ROOCODE
-    model: str = "grok-code-fast-1"
+    """AI provider configuration - Qwen Code is the default provider."""
+    provider: AIProvider = AIProvider.QWENCODE
+    model: str = "qwen3-coder-plus"
     api_key: str | None = None
     api_base: str | None = None
-    roocode: RooCodeConfig = Field(default_factory=RooCodeConfig)
     qwencode: QwenCodeConfig = Field(default_factory=QwenCodeConfig)
     timeout: int = 600
     max_retries: int = 3
@@ -223,10 +224,9 @@ class DashboardConfig:
     session_token: str | None = None
     config_file: str = "/tmp/strix_scan_config.json"
     ready_file: str = "/tmp/strix_config_ready"
-    auth_callback_port: int = 18765
+    auth_callback_port: int = 18766  # Qwen Code callback port
     
     # Feature flags
-    enable_roocode_auth: bool = True
     enable_qwencode_auth: bool = True
     enable_root_access: bool = True
     enable_custom_tools: bool = True
@@ -237,14 +237,12 @@ class DashboardConfig:
     max_targets: int = 10
     max_instructions_length: int = 10000
     
-    # OAuth configuration - Roo Code
-    roocode_auth_url: str = "https://app.roocode.com"
-    roocode_api_url: str = "https://api.roocode.com"
-    
     # OAuth configuration - Qwen Code CLI
     qwencode_auth_url: str = "https://chat.qwen.ai"
     qwencode_api_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    qwencode_auth_callback_port: int = 18766
+    qwencode_intl_api_url: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+    qwencode_openrouter_url: str = "https://openrouter.ai/api/v1"
+    qwencode_modelscope_url: str = "https://api-inference.modelscope.cn/v1"
     
     # GitHub Actions integration
     is_github_actions: bool = IS_GITHUB_ACTIONS
@@ -263,21 +261,14 @@ class DashboardState:
     connected_clients: int = 0
     start_time: datetime | None = None
     
-    # Roo Code authentication state
-    roocode_user_email: str | None = None
-    roocode_user_id: str | None = None
-    roocode_access_token: str | None = None
-    roocode_refresh_token: str | None = None
-    roocode_token_expires_at: float | None = None
-    
     # Qwen Code authentication state
-    qwencode_auth_status: AuthStatus = AuthStatus.NOT_AUTHENTICATED
     qwencode_user_email: str | None = None
     qwencode_user_id: str | None = None
     qwencode_access_token: str | None = None
     qwencode_refresh_token: str | None = None
     qwencode_token_expires_at: float | None = None
     qwencode_api_endpoint: str | None = None
+    qwencode_api_provider: str = "qwen_oauth"  # qwen_oauth, dashscope, modelscope, openrouter
     
     # OAuth callback state
     oauth_state: str | None = None
@@ -344,39 +335,63 @@ FOCUS_AREA_DESCRIPTIONS = {
 }
 
 
-# Fallback Roo Code models - used ONLY when API is unavailable
-# These models should match the official Roo Code Cloud models from:
-# https://docs.roocode.com/providers/roo-code-cloud
-# NOTE: The dashboard should ALWAYS fetch models dynamically from the API
-# when the user is authenticated. These are fallback defaults only.
-ROOCODE_MODELS: dict = {
-    # Empty by default - models should be fetched from API after authentication
-    # This ensures we don't show outdated/incorrect models to users
-}
-
-
-# Qwen Code CLI models
+# Qwen Code CLI models - Primary AI models for Strix
 # Reference: https://github.com/QwenLM/qwen-code
 QWENCODE_MODELS: dict = {
     "qwen3-coder-plus": {
         "name": "qwen3-coder-plus",
         "display_name": "Qwen3 Coder Plus",
-        "description": "High-performance coding model optimized for complex tasks",
+        "description": "High-performance coding model optimized for complex tasks - 262K context",
         "context_window": 262000,
         "free": True,
         "provider": "qwencode",
-        "capabilities": ["code", "chat", "vision"],
-        "speed": "moderate",
+        "capabilities": ["code", "chat", "vision", "analysis"],
+        "speed": "fast",
+        "endpoint": "dashscope",
+    },
+    "qwen3-coder-plus-latest": {
+        "name": "qwen3-coder-plus-latest",
+        "display_name": "Qwen3 Coder Plus (Latest)",
+        "description": "Latest version of Qwen3 coding model with newest improvements",
+        "context_window": 262000,
+        "free": True,
+        "provider": "qwencode",
+        "capabilities": ["code", "chat", "vision", "analysis"],
+        "speed": "fast",
+        "endpoint": "dashscope",
     },
     "qwen3-coder": {
         "name": "qwen3-coder",
         "display_name": "Qwen3 Coder",
-        "description": "Balanced coding model for general development tasks",
+        "description": "Balanced coding model for general development tasks - 131K context",
         "context_window": 131000,
         "free": True,
         "provider": "qwencode",
         "capabilities": ["code", "chat"],
         "speed": "fast",
+        "endpoint": "dashscope",
+    },
+    "Qwen/Qwen3-Coder-480B-A35B-Instruct": {
+        "name": "Qwen/Qwen3-Coder-480B-A35B-Instruct",
+        "display_name": "Qwen3 Coder 480B (ModelScope)",
+        "description": "Qwen3 Coder 480B model via ModelScope - 2,000 free calls/day in China",
+        "context_window": 256000,
+        "free": True,
+        "provider": "modelscope",
+        "capabilities": ["code", "chat", "analysis", "vision"],
+        "speed": "moderate",
+        "endpoint": "modelscope",
+    },
+    "qwen/qwen3-coder:free": {
+        "name": "qwen/qwen3-coder:free",
+        "display_name": "Qwen3 Coder (OpenRouter Free)",
+        "description": "Qwen3 Coder via OpenRouter - 1,000 free calls/day worldwide",
+        "context_window": 128000,
+        "free": True,
+        "provider": "openrouter",
+        "capabilities": ["code", "chat"],
+        "speed": "fast",
+        "endpoint": "openrouter",
     },
 }
 
@@ -424,4 +439,44 @@ SCAN_MODES = {
     "black_box": "Black Box - External testing only (web application)",
     "white_box": "White Box - Source code analysis + testing",
     "combined": "Combined - Full scope testing with source and live app",
+}
+
+
+# API Endpoint options for international users
+API_ENDPOINTS = {
+    "qwen_oauth": {
+        "name": "Qwen OAuth (Direct)",
+        "description": "Direct authentication via qwen.ai - 2,000 requests/day (requires China access)",
+        "url": "https://chat.qwen.ai/api/v1",
+        "free_tier": "2,000 requests/day",
+        "requires_china_access": True,
+    },
+    "dashscope": {
+        "name": "Alibaba Cloud DashScope (China)",
+        "description": "Alibaba Cloud API for China users",
+        "url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "free_tier": "Pay-as-you-go with free credits",
+        "requires_china_access": True,
+    },
+    "dashscope_intl": {
+        "name": "Alibaba Cloud DashScope (International)",
+        "description": "Alibaba Cloud API for international users",
+        "url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        "free_tier": "Pay-as-you-go with free credits",
+        "requires_china_access": False,
+    },
+    "modelscope": {
+        "name": "ModelScope (China)",
+        "description": "ModelScope API - 2,000 free calls/day in China",
+        "url": "https://api-inference.modelscope.cn/v1",
+        "free_tier": "2,000 requests/day",
+        "requires_china_access": True,
+    },
+    "openrouter": {
+        "name": "OpenRouter (Worldwide)",
+        "description": "OpenRouter API - 1,000 free calls/day worldwide",
+        "url": "https://openrouter.ai/api/v1",
+        "free_tier": "1,000 requests/day",
+        "requires_china_access": False,
+    },
 }
