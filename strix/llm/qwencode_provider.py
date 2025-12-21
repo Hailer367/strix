@@ -42,17 +42,41 @@ logger = logging.getLogger(__name__)
 
 # Qwen Code CLI API endpoints
 # Based on the official documentation: https://github.com/QwenLM/qwen-code
-# Qwen OAuth: 2,000 requests/day, 60 req/min, no token limits, no regional limits
+#
+# IMPORTANT: The chat.qwen.ai endpoint is NOT an OpenAI-compatible API.
+# It's designed for the qwen-code CLI's internal use only.
+#
+# For LiteLLM integration, we MUST use one of these OpenAI-compatible endpoints:
+# 1. DashScope API (Alibaba Cloud) - https://dashscope.aliyuncs.com/compatible-mode/v1
+# 2. OpenRouter - https://openrouter.ai/api/v1
+# 3. ModelScope - https://api-inference.modelscope.cn/v1
+#
+# Reference: https://qwenlm.github.io/qwen-code-docs/en/users/configuration/auth/
+
+# OAuth endpoints (for device authorization flow)
 QWENCODE_AUTH_URL = "https://chat.qwen.ai"
-QWENCODE_API_URL = "https://chat.qwen.ai/api/v1"
+QWENCODE_DEVICE_AUTH_URL = "https://chat.qwen.ai/api/v1/oauth2/device/code"
+QWENCODE_DEVICE_TOKEN_URL = "https://chat.qwen.ai/api/v1/oauth2/token"
+QWENCODE_AUTHORIZE_URL = "https://chat.qwen.ai/authorize"
+
+# Official OAuth client ID from qwen-code source
+QWENCODE_CLIENT_ID = "f0304373b74a44d2b584a3fb70ca9e56"
+QWENCODE_OAUTH_SCOPE = "openid profile email model.completion"
+QWENCODE_OAUTH_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
+
+# OpenAI-compatible API endpoints that actually work with LiteLLM
+# These are the endpoints that support the OpenAI API format
+QWENCODE_DASHSCOPE_API_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+QWENCODE_MODELSCOPE_API_URL = "https://api-inference.modelscope.cn/v1"
 QWENCODE_OPENROUTER_API_URL = "https://openrouter.ai/api/v1"
 
+# Legacy endpoints (DO NOT USE for LiteLLM - kept for reference only)
+# These are for the qwen-code CLI internal use
+_QWENCODE_CHAT_API_URL = "https://chat.qwen.ai/api/v1"  # NOT OpenAI-compatible
+
 # OAuth Device Authorization Flow endpoints (per official qwen-code CLI)
-# Reference: https://github.com/QwenLM/qwen-code/issues/784
-QWENCODE_DEVICE_CODE_ENDPOINT = "https://chat.qwen.ai/api/v1/device/code"
-QWENCODE_DEVICE_TOKEN_ENDPOINT = "https://chat.qwen.ai/api/v1/device/token"
-QWENCODE_AUTHORIZE_URL = "https://chat.qwen.ai/authorize"
-QWENCODE_CLIENT_ID = "qwen-code"
+QWENCODE_DEVICE_CODE_ENDPOINT = QWENCODE_DEVICE_AUTH_URL
+QWENCODE_DEVICE_TOKEN_ENDPOINT = QWENCODE_DEVICE_TOKEN_URL
 
 # Default config file location
 QWENCODE_CONFIG_DIR = Path.home() / ".strix"
@@ -119,9 +143,16 @@ class QwenCodeCredentials:
     
     Reference: https://github.com/QwenLM/qwen-code
     
-    Two authentication methods:
-    1. qwen_oauth: 2,000 requests/day, 60 req/min, no token limits, no regional limits
-    2. openrouter: 1,000 free requests/day (via qwen-code CLI)
+    API providers for LiteLLM integration:
+    1. dashscope: DashScope API (Alibaba Cloud) - OpenAI-compatible, recommended
+    2. openrouter: OpenRouter - 1,000 free requests/day
+    3. modelscope: ModelScope API - OpenAI-compatible
+    4. qwen_oauth: Legacy - NOTE: chat.qwen.ai is NOT OpenAI-compatible, 
+                   tokens from this flow should be used with DashScope instead
+    
+    IMPORTANT: The chat.qwen.ai/api/v1 endpoint is NOT an OpenAI-compatible API.
+    Tokens obtained from Qwen OAuth must be used with DashScope or other
+    OpenAI-compatible endpoints.
     """
 
     access_token: str
@@ -130,7 +161,8 @@ class QwenCodeCredentials:
     user_email: str | None = None
     user_id: str | None = None
     session_token: str | None = None  # For session-based auth
-    api_provider: str = "qwen_oauth"  # qwen_oauth or openrouter
+    resource_url: str | None = None  # API resource URL from OAuth response
+    api_provider: str = "dashscope"  # dashscope, openrouter, modelscope, or qwen_oauth (legacy)
 
     def is_expired(self) -> bool:
         """Check if the token is expired."""
@@ -148,12 +180,18 @@ class QwenCodeCredentials:
             "user_email": self.user_email,
             "user_id": self.user_id,
             "session_token": self.session_token,
+            "resource_url": self.resource_url,
             "api_provider": self.api_provider,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "QwenCodeCredentials":
         """Create credentials from dictionary."""
+        # Migrate legacy qwen_oauth to dashscope
+        api_provider = data.get("api_provider", "qwen_oauth")
+        if api_provider == "qwen_oauth":
+            api_provider = "dashscope"  # Use OpenAI-compatible endpoint
+        
         return cls(
             access_token=data.get("access_token", ""),
             refresh_token=data.get("refresh_token"),
@@ -161,7 +199,8 @@ class QwenCodeCredentials:
             user_email=data.get("user_email"),
             user_id=data.get("user_id"),
             session_token=data.get("session_token"),
-            api_provider=data.get("api_provider", "qwen_oauth"),
+            resource_url=data.get("resource_url"),
+            api_provider=api_provider,
         )
 
 
@@ -516,14 +555,21 @@ class QwenCodeProvider:
             return True
 
         # Check for manual token configuration
-        manual_token = os.getenv("QWENCODE_ACCESS_TOKEN") or os.getenv("QWENCODE_API_KEY")
+        manual_token = os.getenv("QWENCODE_ACCESS_TOKEN") or os.getenv("QWENCODE_API_KEY") or os.getenv("OPENAI_API_KEY")
         if manual_token:
             # Determine the provider based on environment variables
-            api_base = os.getenv("QWENCODE_API_BASE", "")
-            if "openrouter" in api_base.lower():
+            api_base = os.getenv("QWENCODE_API_BASE") or os.getenv("OPENAI_BASE_URL") or ""
+            api_base_lower = api_base.lower()
+            
+            if "openrouter" in api_base_lower:
                 api_provider = "openrouter"
+            elif "modelscope" in api_base_lower:
+                api_provider = "modelscope"
+            elif "dashscope" in api_base_lower or "aliyun" in api_base_lower:
+                api_provider = "dashscope"
             else:
-                api_provider = "qwen_oauth"
+                # Default to dashscope (OpenAI-compatible endpoint)
+                api_provider = "dashscope"
                 
             self.credentials = QwenCodeCredentials(
                 access_token=manual_token,
@@ -578,14 +624,17 @@ class QwenCodeProvider:
                 access_token = self._poll_for_token(device_code, interval, min(timeout, expires_in))
                 
                 if access_token:
+                    # IMPORTANT: Even though we got the token from chat.qwen.ai OAuth,
+                    # we must use it with DashScope API (OpenAI-compatible) for LiteLLM
                     self.credentials = QwenCodeCredentials(
                         access_token=access_token,
                         expires_at=time.time() + 3600 * 24 * 30,  # 30 days
-                        api_provider="qwen_oauth",
+                        api_provider="dashscope",  # Use OpenAI-compatible endpoint
                     )
                     self._save_credentials()
                     logger.info("Successfully authenticated with Qwen Code CLI via device flow")
                     print("✅ Authentication successful!")
+                    print("   Using DashScope API (OpenAI-compatible endpoint)")
                     return True
         
         # Fallback to local callback server method (for desktop environments)
@@ -650,19 +699,32 @@ class QwenCodeProvider:
         return self.credentials.access_token if self.credentials else None
 
     def get_api_base(self) -> str:
-        """Get API base URL for LiteLLM integration."""
+        """Get API base URL for LiteLLM integration.
+        
+        IMPORTANT: The chat.qwen.ai endpoint is NOT OpenAI-compatible.
+        We must use DashScope, ModelScope, or OpenRouter instead.
+        
+        Returns:
+            An OpenAI-compatible API base URL
+        """
+        # Check environment variable for custom API base first
+        custom_base = os.getenv("QWENCODE_API_BASE") or os.getenv("OPENAI_BASE_URL")
+        if custom_base:
+            return custom_base
+        
         if self.credentials:
             provider = self.credentials.api_provider
             if provider == "openrouter":
                 return QWENCODE_OPENROUTER_API_URL
+            elif provider == "dashscope":
+                return QWENCODE_DASHSCOPE_API_URL
+            elif provider == "modelscope":
+                return QWENCODE_MODELSCOPE_API_URL
         
-        # Check environment variable for custom API base
-        custom_base = os.getenv("QWENCODE_API_BASE")
-        if custom_base:
-            return custom_base
-            
-        # Default to Qwen OAuth API
-        return f"{QWENCODE_AUTH_URL}/api/v1"
+        # Default to DashScope API (Alibaba Cloud's OpenAI-compatible endpoint)
+        # This is the ONLY correct endpoint for LiteLLM integration with Qwen models
+        # The chat.qwen.ai endpoint is NOT OpenAI-compatible and will cause errors
+        return QWENCODE_DASHSCOPE_API_URL
 
     def fetch_available_models(self, force_refresh: bool = False) -> dict[str, dict[str, Any]]:
         """
@@ -788,12 +850,20 @@ def is_qwencode_model(model_name: str) -> bool:
 def configure_qwencode_for_litellm(model_name: str) -> tuple[str, str | None, str | None]:
     """
     Configure LiteLLM parameters for Qwen Code model.
+    
+    IMPORTANT: This function configures the model to use OpenAI-compatible endpoints.
+    The chat.qwen.ai endpoint is NOT compatible with LiteLLM's openai provider.
+    
+    For Qwen models, we use:
+    - DashScope API (default): https://dashscope.aliyuncs.com/compatible-mode/v1
+    - OpenRouter: https://openrouter.ai/api/v1
+    - ModelScope: https://api-inference.modelscope.cn/v1
 
     Args:
-        model_name: The Qwen Code model name
+        model_name: The Qwen Code model name (e.g., "qwencode/qwen3-coder-plus")
 
     Returns:
-        Tuple of (model_id, api_key, api_base)
+        Tuple of (model_id, api_key, api_base) configured for LiteLLM
     """
     provider = get_qwencode_provider()
 
@@ -807,18 +877,44 @@ def configure_qwencode_for_litellm(model_name: str) -> tuple[str, str | None, st
     
     # Determine the correct model ID format based on provider
     api_provider = provider.credentials.api_provider if provider.credentials else "qwen_oauth"
-    
-    if api_provider == "openrouter":
-        # OpenRouter uses format like "qwen/qwen3-coder:free"
-        if not clean_name.startswith("qwen/"):
-            model_id = f"openai/{clean_name}"  # LiteLLM format for OpenRouter
-        else:
-            model_id = f"openai/{clean_name}"
-    else:
-        # For Alibaba Cloud/ModelScope, use OpenAI-compatible format
-        model_id = f"openai/{clean_name}"
-    
     api_key = provider.get_api_key()
     api_base = provider.get_api_base()
-
+    
+    # Map model names to the correct format for each provider
+    if api_provider == "openrouter":
+        # OpenRouter uses format like "qwen/qwen3-coder:free"
+        if clean_name.startswith("qwen/"):
+            model_id = f"openrouter/{clean_name}"
+        elif "free" in clean_name.lower():
+            model_id = f"openrouter/qwen/qwen3-coder:free"
+        else:
+            model_id = f"openrouter/qwen/{clean_name}"
+    elif api_provider == "modelscope":
+        # ModelScope uses Qwen/ prefix
+        if clean_name.startswith("Qwen/"):
+            model_id = f"openai/{clean_name}"
+        else:
+            # Map common names to ModelScope model IDs
+            modelscope_mapping = {
+                "qwen3-coder-plus": "Qwen/Qwen3-Coder-Plus",
+                "qwen3-coder-plus-latest": "Qwen/Qwen3-Coder-Plus-Latest",
+                "qwen3-coder": "Qwen/Qwen3-Coder",
+            }
+            mapped_name = modelscope_mapping.get(clean_name, f"Qwen/{clean_name}")
+            model_id = f"openai/{mapped_name}"
+    else:
+        # Default: DashScope API (Alibaba Cloud)
+        # DashScope uses model names like "qwen-coder-plus-latest"
+        dashscope_mapping = {
+            "qwen3-coder-plus": "qwen-coder-plus-latest",
+            "qwen3-coder-plus-latest": "qwen-coder-plus-latest", 
+            "qwen3-coder": "qwen-coder-turbo",
+            "qwen-coder-plus": "qwen-coder-plus-latest",
+            "qwen-coder": "qwen-coder-turbo",
+        }
+        mapped_name = dashscope_mapping.get(clean_name, clean_name)
+        model_id = f"openai/{mapped_name}"
+    
+    logger.info(f"Configured Qwen Code for LiteLLM: model={model_id}, api_base={api_base}")
+    
     return model_id, api_key, api_base
