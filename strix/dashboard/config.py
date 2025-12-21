@@ -440,22 +440,52 @@ SCAN_MODES = {
 
 # API Endpoint options
 # Reference: https://github.com/QwenLM/qwen-code
+# 
+# IMPORTANT: The chat.qwen.ai endpoint is NOT an OpenAI-compatible API.
+# It's designed for the qwen-code CLI's internal use only.
+# For LiteLLM integration, we must use OpenAI-compatible endpoints.
+#
+# The authentication flow uses Qwen OAuth (chat.qwen.ai) but the API calls
+# must go through DashScope, OpenRouter, or ModelScope.
 API_ENDPOINTS = {
-    "qwen_oauth": {
-        "name": "Qwen OAuth (Recommended)",
-        "description": "OAuth Device Authorization via qwen.ai - 2,000 requests/day, 60 req/min, no token limits, no regional limits",
-        "url": "https://chat.qwen.ai/api/v1",
+    "dashscope": {
+        "name": "DashScope API (Recommended)",
+        "description": "Alibaba Cloud DashScope - OpenAI-compatible API for Qwen models",
+        "url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "auth_url": "https://chat.qwen.ai/authorize",
-        "device_code_url": "https://chat.qwen.ai/api/v1/device/code",
-        "device_token_url": "https://chat.qwen.ai/api/v1/device/token",
-        "free_tier": "2,000 requests/day",
+        "device_code_url": "https://chat.qwen.ai/api/v1/oauth2/device/code",
+        "device_token_url": "https://chat.qwen.ai/api/v1/oauth2/token",
+        "free_tier": "2,000 requests/day (with Qwen OAuth token)",
+        "openai_compatible": True,
         "recommended": True,
     },
     "openrouter": {
-        "name": "OpenRouter (via qwen-code)",
-        "description": "OpenRouter API via qwen-code CLI - 1,000 free requests/day",
+        "name": "OpenRouter",
+        "description": "OpenRouter API - Access Qwen models via OpenRouter",
         "url": "https://openrouter.ai/api/v1",
         "free_tier": "1,000 requests/day (free tier)",
+        "openai_compatible": True,
         "recommended": False,
+    },
+    "modelscope": {
+        "name": "ModelScope API",
+        "description": "ModelScope - OpenAI-compatible API for Qwen models",
+        "url": "https://api-inference.modelscope.cn/v1",
+        "free_tier": "Limited free tier",
+        "openai_compatible": True,
+        "recommended": False,
+    },
+    # Legacy - kept for backward compatibility but NOT recommended
+    "qwen_oauth": {
+        "name": "Qwen OAuth (Legacy - DO NOT USE)",
+        "description": "DEPRECATED: chat.qwen.ai is NOT OpenAI-compatible. Use DashScope instead.",
+        "url": "https://dashscope.aliyuncs.com/compatible-mode/v1",  # Redirect to DashScope
+        "auth_url": "https://chat.qwen.ai/authorize",
+        "device_code_url": "https://chat.qwen.ai/api/v1/oauth2/device/code",
+        "device_token_url": "https://chat.qwen.ai/api/v1/oauth2/token",
+        "free_tier": "2,000 requests/day",
+        "openai_compatible": False,  # The chat.qwen.ai endpoint is NOT compatible
+        "recommended": False,
+        "deprecated": True,
     },
 }
