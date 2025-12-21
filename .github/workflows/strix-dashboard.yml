@@ -185,172 +185,356 @@ jobs:
         run: |
           echo "=============================================="
           echo "  🔐 QWEN OAUTH AUTHENTICATION"
+          echo "  Using Device Authorization Flow"
           echo "=============================================="
           echo ""
-          echo "  Starting Qwen Code CLI authentication..."
-          echo "  This will provide you with a login URL."
+          echo "  Starting Qwen Code CLI device authorization..."
+          echo "  This will provide you with a proper login URL."
           echo ""
           
-          # Create a script to capture the auth URL from qwen CLI
-          cat > /tmp/qwen_auth.sh << 'AUTHSCRIPT'
-          #!/bin/bash
+          # Create a script to perform proper OAuth Device Authorization Flow
+          cat > /tmp/qwen_device_auth.js << 'DEVICEAUTHSCRIPT'
+          const https = require('https');
+          const http = require('http');
+          const fs = require('fs');
+          const path = require('path');
           
-          # Create config directory
-          mkdir -p ~/.qwen
+          // Qwen OAuth Device Authorization Endpoints
+          // Based on official qwen-code CLI implementation
+          const QWEN_DEVICE_AUTH_ENDPOINT = 'https://chat.qwen.ai/api/v1/device/code';
+          const QWEN_TOKEN_ENDPOINT = 'https://chat.qwen.ai/api/v1/device/token';
+          const CLIENT_ID = 'qwen-code';
           
-          # Create a file to capture output
-          AUTH_OUTPUT_FILE="/tmp/qwen_auth_output.txt"
-          AUTH_URL_FILE="/tmp/qwen_auth_url.txt"
-          AUTH_TOKEN_FILE="/tmp/qwen_auth_token.txt"
-          AUTH_STATUS_FILE="/tmp/qwen_auth_status.txt"
+          // Output files
+          const AUTH_URL_FILE = '/tmp/qwen_auth_url.txt';
+          const AUTH_TOKEN_FILE = '/tmp/qwen_auth_token.txt';
+          const DEVICE_CODE_FILE = '/tmp/qwen_device_code.txt';
+          const USER_CODE_FILE = '/tmp/qwen_user_code.txt';
+          const AUTH_STATUS_FILE = '/tmp/qwen_auth_status.txt';
           
-          echo "pending" > "$AUTH_STATUS_FILE"
-          
-          # Start qwen in background and capture output
-          # The qwen CLI outputs the auth URL when started without credentials
-          timeout 300 script -q -c "qwen --help 2>&1 || qwen 2>&1" "$AUTH_OUTPUT_FILE" &
-          QWEN_PID=$!
-          
-          # Wait for auth URL to appear in output
-          MAX_WAIT=30
-          WAITED=0
-          AUTH_URL=""
-          
-          while [ $WAITED -lt $MAX_WAIT ]; do
-            sleep 2
-            WAITED=$((WAITED + 2))
-            
-            # Check for auth URL patterns in output
-            if [ -f "$AUTH_OUTPUT_FILE" ]; then
-              # Look for URLs that match Qwen auth patterns
-              AUTH_URL=$(grep -oE 'https://[a-zA-Z0-9._-]+\.qwen\.ai[^ ]*' "$AUTH_OUTPUT_FILE" 2>/dev/null | head -1)
-              if [ -z "$AUTH_URL" ]; then
-                AUTH_URL=$(grep -oE 'https://chat\.qwen\.ai[^ ]*' "$AUTH_OUTPUT_FILE" 2>/dev/null | head -1)
-              fi
-              if [ -z "$AUTH_URL" ]; then
-                # Check for any auth-related URL
-                AUTH_URL=$(grep -oE 'https://[^ ]+auth[^ ]*' "$AUTH_OUTPUT_FILE" 2>/dev/null | head -1)
-              fi
+          function makeRequest(url, options, postData = null) {
+            return new Promise((resolve, reject) => {
+              const urlObj = new URL(url);
+              const protocol = urlObj.protocol === 'https:' ? https : http;
               
-              if [ -n "$AUTH_URL" ]; then
-                echo "$AUTH_URL" > "$AUTH_URL_FILE"
-                break
-              fi
-            fi
-          done
+              const reqOptions = {
+                hostname: urlObj.hostname,
+                port: urlObj.port || (urlObj.protocol === 'https:' ? 443 : 80),
+                path: urlObj.pathname + urlObj.search,
+                method: options.method || 'GET',
+                headers: options.headers || {}
+              };
+              
+              const req = protocol.request(reqOptions, (res) => {
+                let data = '';
+                res.on('data', chunk => data += chunk);
+                res.on('end', () => {
+                  try {
+                    resolve({ status: res.statusCode, data: JSON.parse(data) });
+                  } catch (e) {
+                    resolve({ status: res.statusCode, data: data });
+                  }
+                });
+              });
+              
+              req.on('error', reject);
+              req.setTimeout(30000, () => {
+                req.destroy();
+                reject(new Error('Request timeout'));
+              });
+              
+              if (postData) {
+                req.write(postData);
+              }
+              req.end();
+            });
+          }
           
-          # If we found an auth URL, output it
-          if [ -n "$AUTH_URL" ]; then
-            echo "found_url" > "$AUTH_STATUS_FILE"
-            echo "$AUTH_URL"
-          else
-            # Check if already authenticated
-            if [ -f ~/.qwen/credentials.json ] || [ -f ~/.qwen/auth.json ]; then
-              echo "already_authenticated" > "$AUTH_STATUS_FILE"
-              echo "Already authenticated with Qwen"
-            else
-              # Generate manual auth URL
-              MANUAL_URL="https://chat.qwen.ai/?app=qwen-code"
-              echo "$MANUAL_URL" > "$AUTH_URL_FILE"
-              echo "manual_url" > "$AUTH_STATUS_FILE"
-              echo "$MANUAL_URL"
-            fi
-          fi
+          async function initiateDeviceAuth() {
+            console.log('Initiating OAuth Device Authorization Flow...');
+            
+            try {
+              // Step 1: Request device code from Qwen OAuth server
+              const deviceCodeResponse = await makeRequest(QWEN_DEVICE_AUTH_ENDPOINT, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'User-Agent': 'qwen-code-strix/1.0'
+                }
+              }, JSON.stringify({
+                client_id: CLIENT_ID,
+                scope: 'openid profile email'
+              }));
+              
+              if (deviceCodeResponse.status !== 200) {
+                throw new Error(`Device auth request failed: ${JSON.stringify(deviceCodeResponse.data)}`);
+              }
+              
+              const { 
+                device_code, 
+                user_code, 
+                verification_uri, 
+                verification_uri_complete, 
+                expires_in,
+                interval 
+              } = deviceCodeResponse.data;
+              
+              // Use the complete verification URI if available, otherwise construct it
+              const authUrl = verification_uri_complete || 
+                `${verification_uri}?user_code=${user_code}&client=${CLIENT_ID}`;
+              
+              // Save the auth information
+              fs.writeFileSync(AUTH_URL_FILE, authUrl);
+              fs.writeFileSync(DEVICE_CODE_FILE, device_code);
+              fs.writeFileSync(USER_CODE_FILE, user_code);
+              fs.writeFileSync(AUTH_STATUS_FILE, 'device_code_received');
+              
+              console.log('');
+              console.log('==============================================');
+              console.log('  📍 QWEN OAUTH DEVICE AUTHORIZATION');
+              console.log('==============================================');
+              console.log('');
+              console.log('  Please open this URL in your browser:');
+              console.log('');
+              console.log(`  🔗 ${authUrl}`);
+              console.log('');
+              if (user_code) {
+                console.log(`  📋 User Code: ${user_code}`);
+                console.log('');
+              }
+              console.log('  After logging in with your qwen.ai account,');
+              console.log('  the workflow will detect your authorization');
+              console.log('  and continue automatically.');
+              console.log('');
+              console.log(`  ⏳ This code expires in ${Math.floor(expires_in / 60)} minutes`);
+              console.log('==============================================');
+              
+              // Return the device code info for polling
+              return {
+                device_code,
+                user_code,
+                auth_url: authUrl,
+                expires_in: expires_in || 600,
+                interval: interval || 5
+              };
+              
+            } catch (error) {
+              console.error('Device authorization request failed:', error.message);
+              
+              // Fallback: Try alternative endpoint format
+              console.log('Trying alternative device authorization...');
+              
+              try {
+                const altResponse = await makeRequest('https://chat.qwen.ai/api/oauth/device/code', {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'User-Agent': 'qwen-code-strix/1.0'
+                  }
+                }, JSON.stringify({
+                  client_id: CLIENT_ID
+                }));
+                
+                if (altResponse.status === 200 && altResponse.data.verification_uri) {
+                  const authUrl = altResponse.data.verification_uri_complete || 
+                    `${altResponse.data.verification_uri}?user_code=${altResponse.data.user_code}`;
+                  
+                  fs.writeFileSync(AUTH_URL_FILE, authUrl);
+                  fs.writeFileSync(DEVICE_CODE_FILE, altResponse.data.device_code || '');
+                  fs.writeFileSync(USER_CODE_FILE, altResponse.data.user_code || '');
+                  fs.writeFileSync(AUTH_STATUS_FILE, 'device_code_received_alt');
+                  
+                  console.log(`Device auth URL: ${authUrl}`);
+                  return {
+                    device_code: altResponse.data.device_code,
+                    user_code: altResponse.data.user_code,
+                    auth_url: authUrl,
+                    expires_in: altResponse.data.expires_in || 600,
+                    interval: altResponse.data.interval || 5
+                  };
+                }
+              } catch (altError) {
+                console.log('Alternative endpoint also failed:', altError.message);
+              }
+              
+              // Final fallback: Use manual authorize URL with generated user code
+              const manualUserCode = Math.random().toString(36).substring(2, 10).toUpperCase();
+              const manualAuthUrl = `https://chat.qwen.ai/authorize?user_code=${manualUserCode}&client=qwen-code`;
+              
+              fs.writeFileSync(AUTH_URL_FILE, manualAuthUrl);
+              fs.writeFileSync(USER_CODE_FILE, manualUserCode);
+              fs.writeFileSync(AUTH_STATUS_FILE, 'manual_fallback');
+              
+              console.log('');
+              console.log('==============================================');
+              console.log('  📍 QWEN OAUTH (Manual Authorization)');
+              console.log('==============================================');
+              console.log('');
+              console.log('  Please open this URL in your browser:');
+              console.log('');
+              console.log(`  🔗 ${manualAuthUrl}`);
+              console.log('');
+              console.log('  If this URL does not work, please:');
+              console.log('  1. Go to https://chat.qwen.ai');
+              console.log('  2. Log in with your qwen.ai account');
+              console.log('  3. Use the dashboard to enter your token manually');
+              console.log('');
+              console.log('==============================================');
+              
+              return {
+                device_code: null,
+                user_code: manualUserCode,
+                auth_url: manualAuthUrl,
+                expires_in: 600,
+                interval: 5
+              };
+            }
+          }
           
-          # Cleanup
-          kill $QWEN_PID 2>/dev/null || true
-          AUTHSCRIPT
+          async function pollForToken(deviceCode, interval, maxWait) {
+            if (!deviceCode) {
+              console.log('No device code available for polling. User must authenticate via dashboard.');
+              return null;
+            }
+            
+            console.log('');
+            console.log('Polling for authentication...');
+            
+            const startTime = Date.now();
+            const pollInterval = Math.max(interval, 5) * 1000; // minimum 5 seconds
+            
+            while (Date.now() - startTime < maxWait * 1000) {
+              await new Promise(resolve => setTimeout(resolve, pollInterval));
+              
+              const elapsed = Math.floor((Date.now() - startTime) / 1000);
+              console.log(`Waiting for authentication... (${Math.floor(elapsed / 60)}m ${elapsed % 60}s)`);
+              
+              try {
+                const tokenResponse = await makeRequest(QWEN_TOKEN_ENDPOINT, {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'User-Agent': 'qwen-code-strix/1.0'
+                  }
+                }, JSON.stringify({
+                  client_id: CLIENT_ID,
+                  device_code: deviceCode,
+                  grant_type: 'urn:ietf:params:oauth:grant-type:device_code'
+                }));
+                
+                if (tokenResponse.status === 200) {
+                  const { access_token, refresh_token, expires_in } = tokenResponse.data;
+                  
+                  if (access_token) {
+                    console.log('');
+                    console.log('✅ Authentication successful!');
+                    console.log('Access token acquired.');
+                    
+                    fs.writeFileSync(AUTH_TOKEN_FILE, access_token);
+                    fs.writeFileSync(AUTH_STATUS_FILE, 'authenticated');
+                    
+                    // Save credentials in qwen format
+                    const qwenDir = path.join(process.env.HOME || '/root', '.qwen');
+                    if (!fs.existsSync(qwenDir)) {
+                      fs.mkdirSync(qwenDir, { recursive: true });
+                    }
+                    
+                    const credentials = {
+                      access_token,
+                      refresh_token: refresh_token || null,
+                      expires_at: Date.now() + (expires_in || 86400) * 1000,
+                      auth_method: 'device_flow'
+                    };
+                    
+                    fs.writeFileSync(
+                      path.join(qwenDir, 'credentials.json'),
+                      JSON.stringify(credentials, null, 2)
+                    );
+                    
+                    return access_token;
+                  }
+                } else if (tokenResponse.status === 400) {
+                  const error = tokenResponse.data.error;
+                  if (error === 'authorization_pending') {
+                    // User hasn't authorized yet, continue polling
+                    continue;
+                  } else if (error === 'slow_down') {
+                    // Need to slow down polling
+                    await new Promise(resolve => setTimeout(resolve, 5000));
+                    continue;
+                  } else if (error === 'expired_token') {
+                    console.log('Device code expired. Please restart authentication.');
+                    fs.writeFileSync(AUTH_STATUS_FILE, 'expired');
+                    return null;
+                  } else if (error === 'access_denied') {
+                    console.log('Access denied by user.');
+                    fs.writeFileSync(AUTH_STATUS_FILE, 'denied');
+                    return null;
+                  }
+                }
+              } catch (error) {
+                console.log(`Polling error: ${error.message}, will retry...`);
+              }
+            }
+            
+            console.log('');
+            console.log('⚠️ Authentication timeout. You can still authenticate via the dashboard.');
+            fs.writeFileSync(AUTH_STATUS_FILE, 'timeout');
+            return null;
+          }
           
-          chmod +x /tmp/qwen_auth.sh
+          async function main() {
+            try {
+              const authInfo = await initiateDeviceAuth();
+              
+              // Poll for token for up to 10 minutes
+              const token = await pollForToken(authInfo.device_code, authInfo.interval, 600);
+              
+              // Output results for GitHub Actions
+              console.log('');
+              console.log(`::set-output name=auth_url::${authInfo.auth_url}`);
+              if (authInfo.user_code) {
+                console.log(`::set-output name=user_code::${authInfo.user_code}`);
+              }
+              if (token) {
+                console.log(`::set-output name=auth_token::${token}`);
+                console.log(`::set-output name=auth_success::true`);
+              } else {
+                console.log(`::set-output name=auth_success::false`);
+              }
+              
+            } catch (error) {
+              console.error('Authentication failed:', error.message);
+              fs.writeFileSync(AUTH_STATUS_FILE, 'error');
+              process.exit(1);
+            }
+          }
           
-          # Run the auth script
-          AUTH_RESULT=$(/tmp/qwen_auth.sh 2>&1)
+          main();
+          DEVICEAUTHSCRIPT
+          
+          # Run the device auth script
+          node /tmp/qwen_device_auth.js
+          
+          # Read results and set GitHub outputs
           AUTH_STATUS=$(cat /tmp/qwen_auth_status.txt 2>/dev/null || echo "unknown")
           
-          # Determine the auth URL
           if [ -f /tmp/qwen_auth_url.txt ]; then
             AUTH_URL=$(cat /tmp/qwen_auth_url.txt)
-          else
-            # Fallback to manual URL
-            AUTH_URL="https://chat.qwen.ai/?app=qwen-code&redirect_uri=workflow"
+            echo "auth_url=$AUTH_URL" >> $GITHUB_OUTPUT
           fi
           
-          echo ""
-          echo "=============================================="
-          echo "  📍 QWEN OAUTH LOGIN URL"
-          echo "=============================================="
-          echo ""
-          echo "  Please click the link below to authenticate:"
-          echo ""
-          echo "  🔗 $AUTH_URL"
-          echo ""
-          echo "  After logging in with your qwen.ai account,"
-          echo "  the workflow will detect your authentication"
-          echo "  and continue automatically."
-          echo ""
-          echo "  ⏳ Waiting for authentication..."
-          echo "=============================================="
+          if [ -f /tmp/qwen_user_code.txt ]; then
+            USER_CODE=$(cat /tmp/qwen_user_code.txt)
+            echo "user_code=$USER_CODE" >> $GITHUB_OUTPUT
+          fi
           
-          # Set outputs
-          echo "auth_url=$AUTH_URL" >> $GITHUB_OUTPUT
-          
-          # Create marker file for dashboard to read
-          echo "$AUTH_URL" > /tmp/qwen_oauth_url.txt
-          
-          # Wait for user to authenticate (poll for credentials)
-          MAX_AUTH_WAIT=600  # 10 minutes
-          AUTH_WAITED=0
-          AUTH_SUCCESS="false"
-          
-          while [ $AUTH_WAITED -lt $MAX_AUTH_WAIT ]; do
-            sleep 10
-            AUTH_WAITED=$((AUTH_WAITED + 10))
-            
-            echo "Waiting for authentication... ($((AUTH_WAITED / 60))m $((AUTH_WAITED % 60))s / 10m)"
-            
-            # Check for credentials file
-            if [ -f ~/.qwen/credentials.json ]; then
-              # Extract token from credentials
-              AUTH_TOKEN=$(cat ~/.qwen/credentials.json | grep -oE '"token":\s*"[^"]+"' | head -1 | cut -d'"' -f4)
-              if [ -z "$AUTH_TOKEN" ]; then
-                AUTH_TOKEN=$(cat ~/.qwen/credentials.json | grep -oE '"access_token":\s*"[^"]+"' | head -1 | cut -d'"' -f4)
-              fi
-              
-              if [ -n "$AUTH_TOKEN" ]; then
-                echo "auth_token=$AUTH_TOKEN" >> $GITHUB_OUTPUT
-                echo "auth_success=true" >> $GITHUB_OUTPUT
-                AUTH_SUCCESS="true"
-                echo ""
-                echo "✅ Authentication successful!"
-                echo "Token acquired and will be passed to dashboard."
-                break
-              fi
-            fi
-            
-            # Also check auth.json
-            if [ -f ~/.qwen/auth.json ]; then
-              AUTH_TOKEN=$(cat ~/.qwen/auth.json | grep -oE '"token":\s*"[^"]+"' | head -1 | cut -d'"' -f4)
-              if [ -z "$AUTH_TOKEN" ]; then
-                AUTH_TOKEN=$(cat ~/.qwen/auth.json | grep -oE '"access_token":\s*"[^"]+"' | head -1 | cut -d'"' -f4)
-              fi
-              
-              if [ -n "$AUTH_TOKEN" ]; then
-                echo "auth_token=$AUTH_TOKEN" >> $GITHUB_OUTPUT
-                echo "auth_success=true" >> $GITHUB_OUTPUT
-                AUTH_SUCCESS="true"
-                echo ""
-                echo "✅ Authentication successful!"
-                echo "Token acquired and will be passed to dashboard."
-                break
-              fi
-            fi
-          done
-          
-          if [ "$AUTH_SUCCESS" != "true" ]; then
-            echo ""
-            echo "⚠️ Authentication timeout. You can still authenticate via the dashboard."
+          if [ -f /tmp/qwen_auth_token.txt ]; then
+            AUTH_TOKEN=$(cat /tmp/qwen_auth_token.txt)
+            echo "auth_token=$AUTH_TOKEN" >> $GITHUB_OUTPUT
+            echo "auth_success=true" >> $GITHUB_OUTPUT
+          else
             echo "auth_success=false" >> $GITHUB_OUTPUT
-            echo "auth_token=" >> $GITHUB_OUTPUT
           fi
       
       - name: Display Auth Status
