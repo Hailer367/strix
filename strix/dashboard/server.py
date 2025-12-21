@@ -73,9 +73,17 @@ STATIC_DIR = DASHBOARD_DIR / "static"
 # Reference: https://github.com/QwenLM/qwen-code
 # Qwen OAuth: 2,000 requests/day, 60 req/min, no token limits, no regional limits
 QWENCODE_AUTH_URL = "https://chat.qwen.ai"
+QWENCODE_API_URL = "https://chat.qwen.ai/api/v1"
 QWENCODE_OPENROUTER_URL = "https://openrouter.ai/api/v1"
 QWENCODE_CONFIG_DIR = Path.home() / ".strix"
 QWENCODE_CONFIG_FILE = QWENCODE_CONFIG_DIR / "qwencode_config.json"
+
+# OAuth Device Authorization Flow endpoints (per official qwen-code CLI)
+# Reference: https://github.com/QwenLM/qwen-code/issues/784
+QWENCODE_DEVICE_CODE_ENDPOINT = "https://chat.qwen.ai/api/v1/device/code"
+QWENCODE_DEVICE_TOKEN_ENDPOINT = "https://chat.qwen.ai/api/v1/device/token"
+QWENCODE_AUTHORIZE_URL = "https://chat.qwen.ai/authorize"
+QWENCODE_CLIENT_ID = "qwen-code"
 
 # Cache for dynamic models
 _cached_qwencode_models: dict[str, dict[str, Any]] | None = None
@@ -629,7 +637,10 @@ def create_app(config: DashboardConfig | None = None) -> FastAPI:
     
     @app.get("/api/qwencode/login")
     async def qwencode_login_redirect(request: Request) -> dict[str, Any]:
-        """Get the Qwen Code OAuth login URL.
+        """Initiate Qwen Code OAuth Device Authorization Flow.
+        
+        This uses the official qwen-code CLI authentication method:
+        OAuth Device Authorization Flow (RFC 8628)
         
         Qwen OAuth provides:
         - 2,000 free requests per day
@@ -639,16 +650,76 @@ def create_app(config: DashboardConfig | None = None) -> FastAPI:
         
         Reference: https://github.com/QwenLM/qwen-code
         """
+        dashboard_state.auth_status = AuthStatus.AUTHENTICATING
+        
+        # Step 1: Request device code from Qwen OAuth server
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.post(
+                    QWENCODE_DEVICE_CODE_ENDPOINT,
+                    json={
+                        "client_id": QWENCODE_CLIENT_ID,
+                        "scope": "openid profile email"
+                    },
+                    headers={
+                        "Content-Type": "application/json",
+                        "User-Agent": "qwen-code-strix/1.0"
+                    }
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    
+                    device_code = data.get("device_code")
+                    user_code = data.get("user_code")
+                    verification_uri = data.get("verification_uri", QWENCODE_AUTHORIZE_URL)
+                    verification_uri_complete = data.get("verification_uri_complete")
+                    expires_in = data.get("expires_in", 600)
+                    interval = data.get("interval", 5)
+                    
+                    # Build the auth URL (prefer complete URI with user_code embedded)
+                    if verification_uri_complete:
+                        auth_url = verification_uri_complete
+                    elif user_code:
+                        auth_url = f"{verification_uri}?user_code={user_code}&client={QWENCODE_CLIENT_ID}"
+                    else:
+                        auth_url = verification_uri
+                    
+                    # Store device code for polling
+                    dashboard_state.oauth_state = device_code
+                    
+                    await broadcast_update({
+                        "type": "auth_started",
+                        "status": "authenticating",
+                        "auth_url": auth_url,
+                        "user_code": user_code,
+                    })
+                    
+                    return {
+                        "auth_url": auth_url,
+                        "user_code": user_code,
+                        "device_code": device_code,
+                        "expires_in": expires_in,
+                        "interval": interval,
+                        "instructions": f"Open the URL above and enter code: {user_code}" if user_code else "Open the URL above to authenticate",
+                        "note": "2,000 free requests/day, 60 req/min, no token limits!",
+                    }
+                else:
+                    logger.warning(f"Device auth request failed: {response.status_code} - {response.text}")
+                    
+        except Exception as e:
+            logger.warning(f"Device authorization request failed: {e}")
+        
+        # Fallback: Use standard OAuth redirect flow
         state = secrets.token_urlsafe(16)
         dashboard_state.oauth_state = state
-        dashboard_state.auth_status = AuthStatus.AUTHENTICATING
         
         host = request.headers.get("host", f"localhost:{dashboard_config.port}")
         scheme = request.headers.get("x-forwarded-proto", "http")
         callback_url = f"{scheme}://{host}/api/qwencode/callback"
         
-        # Qwen Code CLI uses qwen.ai for OAuth authentication
-        auth_url = f"{QWENCODE_AUTH_URL}/?redirect_uri={callback_url}&state={state}&app=strix"
+        # Fallback auth URL using the authorize endpoint
+        auth_url = f"{QWENCODE_AUTHORIZE_URL}?redirect_uri={callback_url}&state={state}&client={QWENCODE_CLIENT_ID}"
         
         await broadcast_update({
             "type": "auth_started",
@@ -661,6 +732,112 @@ def create_app(config: DashboardConfig | None = None) -> FastAPI:
             "callback_url": callback_url,
             "instructions": "Sign in with your qwen.ai account to get 2,000 free requests per day (no regional limits!)",
         }
+    
+    @app.post("/api/qwencode/poll-token")
+    async def qwencode_poll_token(request: Request) -> dict[str, Any]:
+        """Poll for access token using device code.
+        
+        This is the second step of the OAuth Device Authorization Flow.
+        Call this endpoint repeatedly with the device_code until authentication completes.
+        """
+        try:
+            data = await request.json()
+            device_code = data.get("device_code")
+            
+            if not device_code:
+                raise HTTPException(status_code=400, detail="device_code is required")
+            
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.post(
+                    QWENCODE_DEVICE_TOKEN_ENDPOINT,
+                    json={
+                        "client_id": QWENCODE_CLIENT_ID,
+                        "device_code": device_code,
+                        "grant_type": "urn:ietf:params:oauth:grant-type:device_code"
+                    },
+                    headers={
+                        "Content-Type": "application/json",
+                        "User-Agent": "qwen-code-strix/1.0"
+                    }
+                )
+                
+                if response.status_code == 200:
+                    token_data = response.json()
+                    access_token = token_data.get("access_token")
+                    
+                    if access_token:
+                        # Successfully got token
+                        dashboard_state.qwencode_access_token = access_token
+                        dashboard_state.qwencode_token_expires_at = time.time() + 3600 * 24 * 30
+                        dashboard_state.auth_status = AuthStatus.AUTHENTICATED
+                        dashboard_state.qwencode_api_provider = "qwen_oauth"
+                        dashboard_state.qwencode_api_endpoint = QWENCODE_API_URL
+                        
+                        save_qwencode_credentials(
+                            access_token=access_token,
+                            refresh_token=token_data.get("refresh_token"),
+                            expires_at=dashboard_state.qwencode_token_expires_at,
+                            api_endpoint=QWENCODE_API_URL,
+                            api_provider="qwen_oauth",
+                        )
+                        
+                        os.environ["QWENCODE_ACCESS_TOKEN"] = access_token
+                        os.environ["OPENAI_API_KEY"] = access_token
+                        os.environ["OPENAI_BASE_URL"] = QWENCODE_API_URL
+                        
+                        await broadcast_update({
+                            "type": "auth_success",
+                            "api_provider": "qwen_oauth",
+                        })
+                        
+                        return {
+                            "status": "success",
+                            "authenticated": True,
+                            "message": "Authentication successful!",
+                        }
+                
+                elif response.status_code == 400:
+                    error_data = response.json()
+                    error = error_data.get("error", "unknown_error")
+                    
+                    if error == "authorization_pending":
+                        return {
+                            "status": "pending",
+                            "authenticated": False,
+                            "message": "Waiting for user authorization...",
+                        }
+                    elif error == "slow_down":
+                        return {
+                            "status": "slow_down",
+                            "authenticated": False,
+                            "message": "Polling too fast, please slow down",
+                        }
+                    elif error == "expired_token":
+                        dashboard_state.auth_status = AuthStatus.FAILED
+                        return {
+                            "status": "expired",
+                            "authenticated": False,
+                            "message": "Device code expired. Please start authentication again.",
+                        }
+                    elif error == "access_denied":
+                        dashboard_state.auth_status = AuthStatus.FAILED
+                        return {
+                            "status": "denied",
+                            "authenticated": False,
+                            "message": "Access denied by user",
+                        }
+                    else:
+                        return {
+                            "status": "error",
+                            "authenticated": False,
+                            "message": f"Token request error: {error}",
+                        }
+                        
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Token polling error: {e}")
+            raise HTTPException(status_code=500, detail=str(e)) from e
     
     @app.get("/api/qwencode/callback", response_model=None)
     async def qwencode_callback(
