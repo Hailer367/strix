@@ -71,16 +71,21 @@ class ScanMode(str, Enum):
 class QwenCodeConfig(BaseModel):
     """Qwen Code CLI configuration - Primary AI Provider.
     
-    Qwen Code offers:
-    - 2,000 free requests per day (via Qwen OAuth in China)
-    - 60 requests per minute rate limit
-    - No token limits
-    - Multiple endpoint options (DashScope, ModelScope, OpenRouter)
+    Qwen Code offers TWO authentication methods:
     
-    For international users outside China:
-    - Use OpenRouter for free tier (1,000 requests/day)
-    - Use QwenBridge proxy solution for full 2,000 requests
-    - Or configure VPN to access qwen.ai directly
+    1. Qwen OAuth (RECOMMENDED - Start in 30 seconds):
+       - 2,000 free requests per day
+       - 60 requests per minute rate limit  
+       - NO token limits, NO regional limits
+       - Just run 'qwen' command and follow browser authentication
+       - Credentials cached locally for future use
+    
+    2. OpenAI-Compatible API (via OpenRouter):
+       - Requires API key from OpenRouter
+       - 1,000 free requests/day on free tier
+       - Must go through qwen-code CLI for proper routing
+    
+    Reference: https://github.com/QwenLM/qwen-code
     """
     enabled: bool = True
     model: str = "qwen3-coder-plus"
@@ -89,11 +94,11 @@ class QwenCodeConfig(BaseModel):
     expires_at: float | None = None
     user_email: str | None = None
     user_id: str | None = None
-    api_endpoint: str | None = None  # DashScope, ModelScope, OpenRouter, etc.
+    api_endpoint: str | None = None  # Auto-configured based on auth method
     auto_authenticate: bool = True
     auth_status: AuthStatus = AuthStatus.NOT_AUTHENTICATED
     # Provider type for different API endpoints
-    api_provider: str = "qwen_oauth"  # qwen_oauth, dashscope, modelscope, openrouter
+    api_provider: str = "qwen_oauth"  # qwen_oauth, openrouter
 
 
 class AIConfig(BaseModel):
@@ -238,11 +243,9 @@ class DashboardConfig:
     max_instructions_length: int = 10000
     
     # OAuth configuration - Qwen Code CLI
+    # Reference: https://github.com/QwenLM/qwen-code
     qwencode_auth_url: str = "https://chat.qwen.ai"
-    qwencode_api_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    qwencode_intl_api_url: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
     qwencode_openrouter_url: str = "https://openrouter.ai/api/v1"
-    qwencode_modelscope_url: str = "https://api-inference.modelscope.cn/v1"
     
     # GitHub Actions integration
     is_github_actions: bool = IS_GITHUB_ACTIONS
@@ -268,7 +271,7 @@ class DashboardState:
     qwencode_refresh_token: str | None = None
     qwencode_token_expires_at: float | None = None
     qwencode_api_endpoint: str | None = None
-    qwencode_api_provider: str = "qwen_oauth"  # qwen_oauth, dashscope, modelscope, openrouter
+    qwencode_api_provider: str = "qwen_oauth"  # qwen_oauth or openrouter
     
     # OAuth callback state
     oauth_state: str | None = None
@@ -337,6 +340,10 @@ FOCUS_AREA_DESCRIPTIONS = {
 
 # Qwen Code CLI models - Primary AI models for Strix
 # Reference: https://github.com/QwenLM/qwen-code
+# 
+# Two authentication methods:
+# 1. Qwen OAuth: 2,000 requests/day, 60 req/min, no token limits, no regional limits
+# 2. OpenRouter: 1,000 free requests/day (via qwen-code CLI)
 QWENCODE_MODELS: dict = {
     "qwen3-coder-plus": {
         "name": "qwen3-coder-plus",
@@ -347,7 +354,7 @@ QWENCODE_MODELS: dict = {
         "provider": "qwencode",
         "capabilities": ["code", "chat", "vision", "analysis"],
         "speed": "fast",
-        "endpoint": "dashscope",
+        "endpoint": "qwen_oauth",
     },
     "qwen3-coder-plus-latest": {
         "name": "qwen3-coder-plus-latest",
@@ -358,7 +365,7 @@ QWENCODE_MODELS: dict = {
         "provider": "qwencode",
         "capabilities": ["code", "chat", "vision", "analysis"],
         "speed": "fast",
-        "endpoint": "dashscope",
+        "endpoint": "qwen_oauth",
     },
     "qwen3-coder": {
         "name": "qwen3-coder",
@@ -369,23 +376,12 @@ QWENCODE_MODELS: dict = {
         "provider": "qwencode",
         "capabilities": ["code", "chat"],
         "speed": "fast",
-        "endpoint": "dashscope",
-    },
-    "Qwen/Qwen3-Coder-480B-A35B-Instruct": {
-        "name": "Qwen/Qwen3-Coder-480B-A35B-Instruct",
-        "display_name": "Qwen3 Coder 480B (ModelScope)",
-        "description": "Qwen3 Coder 480B model via ModelScope - 2,000 free calls/day in China",
-        "context_window": 256000,
-        "free": True,
-        "provider": "modelscope",
-        "capabilities": ["code", "chat", "analysis", "vision"],
-        "speed": "moderate",
-        "endpoint": "modelscope",
+        "endpoint": "qwen_oauth",
     },
     "qwen/qwen3-coder:free": {
         "name": "qwen/qwen3-coder:free",
-        "display_name": "Qwen3 Coder (OpenRouter Free)",
-        "description": "Qwen3 Coder via OpenRouter - 1,000 free calls/day worldwide",
+        "display_name": "Qwen3 Coder (OpenRouter)",
+        "description": "Qwen3 Coder via OpenRouter - 1,000 free requests/day",
         "context_window": 128000,
         "free": True,
         "provider": "openrouter",
@@ -442,41 +438,21 @@ SCAN_MODES = {
 }
 
 
-# API Endpoint options for international users
+# API Endpoint options
+# Reference: https://github.com/QwenLM/qwen-code
 API_ENDPOINTS = {
     "qwen_oauth": {
-        "name": "Qwen OAuth (Direct)",
-        "description": "Direct authentication via qwen.ai - 2,000 requests/day (requires China access)",
+        "name": "Qwen OAuth (Recommended)",
+        "description": "Direct authentication via qwen.ai - 2,000 requests/day, 60 req/min, no token limits, no regional limits",
         "url": "https://chat.qwen.ai/api/v1",
         "free_tier": "2,000 requests/day",
-        "requires_china_access": True,
-    },
-    "dashscope": {
-        "name": "Alibaba Cloud DashScope (China)",
-        "description": "Alibaba Cloud API for China users",
-        "url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "free_tier": "Pay-as-you-go with free credits",
-        "requires_china_access": True,
-    },
-    "dashscope_intl": {
-        "name": "Alibaba Cloud DashScope (International)",
-        "description": "Alibaba Cloud API for international users",
-        "url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-        "free_tier": "Pay-as-you-go with free credits",
-        "requires_china_access": False,
-    },
-    "modelscope": {
-        "name": "ModelScope (China)",
-        "description": "ModelScope API - 2,000 free calls/day in China",
-        "url": "https://api-inference.modelscope.cn/v1",
-        "free_tier": "2,000 requests/day",
-        "requires_china_access": True,
+        "recommended": True,
     },
     "openrouter": {
-        "name": "OpenRouter (Worldwide)",
-        "description": "OpenRouter API - 1,000 free calls/day worldwide",
+        "name": "OpenRouter (via qwen-code)",
+        "description": "OpenRouter API via qwen-code CLI - 1,000 free requests/day",
         "url": "https://openrouter.ai/api/v1",
-        "free_tier": "1,000 requests/day",
-        "requires_china_access": False,
+        "free_tier": "1,000 requests/day (free tier)",
+        "recommended": False,
     },
 }
