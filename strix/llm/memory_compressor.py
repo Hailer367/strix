@@ -256,6 +256,52 @@ def _create_context_summary(contexts: list[dict[str, Any]]) -> str:
     return " | ".join(summary_parts) if summary_parts else ""
 
 
+def _get_litellm_model_config(model: str) -> tuple[str, str | None, str | None]:
+    """
+    Get LiteLLM compatible model configuration.
+    
+    Handles provider-specific model name conversions for Qwen Code and Roo Code.
+    Returns (model_name, api_key, api_base) tuple.
+    """
+    api_key = None
+    api_base = None
+    
+    # Handle Qwen Code provider
+    if model.startswith("qwencode/"):
+        try:
+            from strix.llm.qwencode_provider import configure_qwencode_for_litellm
+            return configure_qwencode_for_litellm(model)
+        except RuntimeError as e:
+            logger.warning(f"Qwen Code config failed: {e}, falling back to model name")
+            # Fall back to using environment variables
+            api_key = os.getenv("QWENCODE_ACCESS_TOKEN") or os.getenv("OPENAI_API_KEY")
+            api_base = os.getenv("QWENCODE_API_BASE") or os.getenv("OPENAI_BASE_URL")
+            clean_name = model.replace("qwencode/", "")
+            return f"openai/{clean_name}", api_key, api_base
+    
+    # Handle Roo Code provider
+    if model.startswith("roocode/"):
+        try:
+            from strix.llm.roocode_provider import configure_roocode_for_litellm
+            return configure_roocode_for_litellm(model)
+        except RuntimeError as e:
+            logger.warning(f"Roo Code config failed: {e}, falling back to model name")
+            api_key = os.getenv("ROOCODE_ACCESS_TOKEN") or os.getenv("OPENAI_API_KEY")
+            api_base = os.getenv("ROOCODE_API_BASE") or os.getenv("OPENAI_BASE_URL")
+            clean_name = model.replace("roocode/", "")
+            return f"openai/{clean_name}", api_key, api_base
+    
+    # Standard model - use environment variables
+    api_key = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
+    api_base = (
+        os.getenv("LLM_API_BASE")
+        or os.getenv("OPENAI_API_BASE")
+        or os.getenv("LITELLM_BASE_URL")
+    )
+    
+    return model, api_key, api_base
+
+
 def _summarize_messages(
     messages: list[dict[str, Any]],
     model: str,
@@ -292,13 +338,22 @@ def _summarize_messages(
     prompt = template.format(conversation=conversation)
 
     try:
-        response = litellm.completion(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            timeout=timeout,
-            max_tokens=1500,  # Allow slightly longer summaries
-            temperature=0.3,  # More deterministic summaries
-        )
+        # Get proper LiteLLM model configuration (handles qwencode/roocode providers)
+        litellm_model, api_key, api_base = _get_litellm_model_config(model)
+        
+        completion_kwargs: dict[str, Any] = {
+            "model": litellm_model,
+            "messages": [{"role": "user", "content": prompt}],
+            "timeout": timeout,
+            "max_tokens": 1500,  # Allow slightly longer summaries
+            "temperature": 0.3,  # More deterministic summaries
+        }
+        if api_key:
+            completion_kwargs["api_key"] = api_key
+        if api_base:
+            completion_kwargs["api_base"] = api_base
+        
+        response = litellm.completion(**completion_kwargs)
         summary = (response.choices[0].message.content or "").strip()
         
         if not summary:
