@@ -12,6 +12,7 @@ Features:
 - Qwen Code OAuth: Browser-based authentication via qwen.ai
 - Real-time WebSocket: Live updates on scan progress
 - Advanced Agent Configuration: Fine-tune Strix agent behavior
+- Workflow Integration: Respects provider selection from GitHub Actions workflow
 
 Authentication Options (Reference: https://github.com/QwenLM/qwen-code):
 1. Qwen OAuth (RECOMMENDED): 2,000 requests/day, 60 req/min, no token limits, no regional limits
@@ -85,6 +86,28 @@ dashboard_config = DashboardConfig()
 dashboard_state = DashboardState()
 connected_websockets: list[WebSocket] = []
 
+# ============================================================================
+# Workflow Integration State
+# These values come from the GitHub Actions workflow and determine which
+# authentication UI to show
+# ============================================================================
+WORKFLOW_PROVIDER = os.getenv("STRIX_WORKFLOW_PROVIDER", "")  # qwen_oauth or openrouter
+WORKFLOW_OAUTH_SELECTED = os.getenv("STRIX_OAUTH_SELECTED", "false").lower() == "true"
+WORKFLOW_OPENROUTER_SELECTED = os.getenv("STRIX_OPENROUTER_SELECTED", "false").lower() == "true"
+WORKFLOW_AUTH_COMPLETED = os.getenv("STRIX_AUTH_COMPLETED", "false").lower() == "true"
+
+
+def get_workflow_config() -> dict[str, Any]:
+    """Get workflow configuration from environment variables."""
+    return {
+        "provider": WORKFLOW_PROVIDER or os.getenv("QWENCODE_API_PROVIDER", ""),
+        "oauth_selected": WORKFLOW_OAUTH_SELECTED,
+        "openrouter_selected": WORKFLOW_OPENROUTER_SELECTED,
+        "auth_completed": WORKFLOW_AUTH_COMPLETED,
+        "api_endpoint": os.getenv("QWENCODE_API_BASE") or os.getenv("OPENAI_BASE_URL", ""),
+        "model": os.getenv("OPENAI_MODEL", "qwen3-coder-plus"),
+    }
+
 
 def save_qwencode_credentials(
     access_token: str,
@@ -150,15 +173,32 @@ async def fetch_qwencode_models(force_refresh: bool = False) -> dict[str, dict[s
     ):
         return _cached_qwencode_models
     
-    # Determine which models to show based on authentication status
+    # Determine which models to show based on authentication status and workflow config
     api_provider = dashboard_state.qwencode_api_provider
+    workflow_config = get_workflow_config()
+    
+    # If workflow specified a provider, use it
+    if workflow_config["provider"]:
+        api_provider = workflow_config["provider"]
     
     # Filter models by provider
     filtered_models = {}
     for model_id, model_data in QWENCODE_MODELS.items():
         endpoint = model_data.get("endpoint", "qwen_oauth")
         
-        # Show all models if not authenticated yet
+        # If workflow selected oauth, only show oauth models
+        if workflow_config["oauth_selected"]:
+            if endpoint in ("qwen_oauth", "dashscope"):
+                filtered_models[model_id] = model_data.copy()
+            continue
+        
+        # If workflow selected openrouter, only show openrouter models
+        if workflow_config["openrouter_selected"]:
+            if endpoint == "openrouter":
+                filtered_models[model_id] = model_data.copy()
+            continue
+        
+        # Show all models if not authenticated yet and no workflow selection
         if dashboard_state.auth_status != AuthStatus.AUTHENTICATED:
             filtered_models[model_id] = model_data.copy()
             continue
@@ -214,6 +254,20 @@ async def lifespan(app: FastAPI) -> Any:
     """Application lifespan manager."""
     logger.info("Strix Dashboard starting up...")
     
+    # Get workflow configuration
+    workflow_config = get_workflow_config()
+    logger.info(f"Workflow config: {workflow_config}")
+    
+    # Set provider based on workflow selection
+    if workflow_config["oauth_selected"]:
+        dashboard_state.qwencode_api_provider = "qwen_oauth"
+        dashboard_state.qwencode_api_endpoint = f"{QWENCODE_AUTH_URL}/api/v1"
+        logger.info("Workflow selected Qwen OAuth")
+    elif workflow_config["openrouter_selected"]:
+        dashboard_state.qwencode_api_provider = "openrouter"
+        dashboard_state.qwencode_api_endpoint = QWENCODE_OPENROUTER_URL
+        logger.info("Workflow selected OpenRouter")
+    
     # Check for existing Qwen Code credentials
     qwen_creds = load_qwencode_credentials()
     if qwen_creds and qwen_creds.get("access_token"):
@@ -225,20 +279,22 @@ async def lifespan(app: FastAPI) -> Any:
             dashboard_state.qwencode_user_email = qwen_creds.get("user_email")
             dashboard_state.qwencode_user_id = qwen_creds.get("user_id")
             dashboard_state.qwencode_token_expires_at = expires_at
-            dashboard_state.qwencode_api_endpoint = qwen_creds.get("api_endpoint")
-            dashboard_state.qwencode_api_provider = qwen_creds.get("api_provider", "qwen_oauth")
+            # Only override endpoint/provider from creds if not set by workflow
+            if not workflow_config["provider"]:
+                dashboard_state.qwencode_api_endpoint = qwen_creds.get("api_endpoint")
+                dashboard_state.qwencode_api_provider = qwen_creds.get("api_provider", "qwen_oauth")
             logger.info("Loaded existing Qwen Code credentials")
     
-    # Check for Qwen Code environment token
+    # Check for Qwen Code environment token (from workflow or secrets)
     qwen_env_token = os.getenv("QWENCODE_ACCESS_TOKEN") or os.getenv("QWENCODE_API_KEY") or os.getenv("OPENAI_API_KEY")
     qwen_env_base = os.getenv("QWENCODE_API_BASE") or os.getenv("OPENAI_BASE_URL")
     
     if qwen_env_token and dashboard_state.auth_status != AuthStatus.AUTHENTICATED:
-        # Determine provider from API base URL
-        api_provider = "qwen_oauth"  # Default to qwen_oauth
-        api_endpoint = f"{QWENCODE_AUTH_URL}/api/v1"
+        # Determine provider from workflow or API base URL
+        api_provider = workflow_config["provider"] or "qwen_oauth"
+        api_endpoint = workflow_config["api_endpoint"] or f"{QWENCODE_AUTH_URL}/api/v1"
         
-        if qwen_env_base:
+        if not workflow_config["provider"] and qwen_env_base:
             if "openrouter" in qwen_env_base.lower():
                 api_provider = "openrouter"
                 api_endpoint = QWENCODE_OPENROUTER_URL
@@ -277,7 +333,7 @@ def create_app(config: DashboardConfig | None = None) -> FastAPI:
     app = FastAPI(
         title="Strix Autonomous Dashboard",
         description="Configuration dashboard for Strix autonomous bug bounty operations - Powered by Qwen Code",
-        version="2.1.0",
+        version="2.2.0",
         lifespan=lifespan,
     )
     
@@ -302,6 +358,7 @@ def create_app(config: DashboardConfig | None = None) -> FastAPI:
     @app.get("/api/status")
     async def get_status() -> dict[str, Any]:
         """Get current dashboard and scan status."""
+        workflow_config = get_workflow_config()
         return {
             "status": dashboard_state.status.value,
             "auth_status": dashboard_state.auth_status.value,
@@ -312,7 +369,13 @@ def create_app(config: DashboardConfig | None = None) -> FastAPI:
             "start_time": dashboard_state.start_time.isoformat() if dashboard_state.start_time else None,
             "user_email": dashboard_state.qwencode_user_email,
             "api_provider": dashboard_state.qwencode_api_provider,
+            "workflow_config": workflow_config,
         }
+    
+    @app.get("/api/workflow-config")
+    async def get_workflow_config_endpoint() -> dict[str, Any]:
+        """Get workflow configuration passed from GitHub Actions."""
+        return get_workflow_config()
     
     @app.get("/api/config")
     async def get_config() -> dict[str, Any]:
@@ -520,6 +583,7 @@ def create_app(config: DashboardConfig | None = None) -> FastAPI:
     async def get_models(refresh: bool = False) -> dict[str, Any]:
         """Get available AI models and configuration options."""
         qwencode_models = await fetch_qwencode_models(force_refresh=refresh)
+        workflow_config = get_workflow_config()
         
         return {
             "qwencode": qwencode_models,
@@ -532,6 +596,7 @@ def create_app(config: DashboardConfig | None = None) -> FastAPI:
             "memory_strategies": MEMORY_STRATEGIES,
             "severity_levels": SEVERITY_LEVELS,
             "output_formats": OUTPUT_FORMATS,
+            "workflow_config": workflow_config,
         }
     
     @app.get("/api/endpoints")
@@ -550,6 +615,7 @@ def create_app(config: DashboardConfig | None = None) -> FastAPI:
     @app.get("/api/qwencode/status")
     async def qwencode_status() -> dict[str, Any]:
         """Get Qwen Code authentication status."""
+        workflow_config = get_workflow_config()
         return {
             "authenticated": dashboard_state.auth_status == AuthStatus.AUTHENTICATED,
             "status": dashboard_state.auth_status.value,
@@ -558,6 +624,7 @@ def create_app(config: DashboardConfig | None = None) -> FastAPI:
             "expires_at": dashboard_state.qwencode_token_expires_at,
             "api_endpoint": dashboard_state.qwencode_api_endpoint,
             "api_provider": dashboard_state.qwencode_api_provider,
+            "workflow_config": workflow_config,
         }
     
     @app.get("/api/qwencode/login")
@@ -757,6 +824,7 @@ def create_app(config: DashboardConfig | None = None) -> FastAPI:
         connected_websockets.append(websocket)
         
         try:
+            workflow_config = get_workflow_config()
             # Send initial state
             await websocket.send_json({
                 "type": "connected",
@@ -765,6 +833,7 @@ def create_app(config: DashboardConfig | None = None) -> FastAPI:
                 "user_email": dashboard_state.qwencode_user_email,
                 "api_provider": dashboard_state.qwencode_api_provider,
                 "config": dashboard_state.config.model_dump() if dashboard_state.config else None,
+                "workflow_config": workflow_config,
             })
             
             while True:
@@ -1014,7 +1083,12 @@ def get_auth_result_html(success: bool, error: str | None = None) -> str:
 
 
 def get_dashboard_html() -> str:
-    """Generate the dashboard HTML - Qwen Code as sole AI provider."""
+    """Generate the dashboard HTML - Qwen Code as sole AI provider.
+    
+    This dashboard respects the workflow-selected API provider:
+    - If Qwen OAuth was selected in workflow: Shows OAuth login (or skips if already authenticated)
+    - If OpenRouter was selected in workflow: Shows API key input with autofilled endpoint
+    """
     return '''<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1185,7 +1259,7 @@ def get_dashboard_html() -> str:
         .full-width { grid-column: 1 / -1; }
         .col-span-2 { grid-column: span 2; }
         
-        .warning-notice, .info-notice {
+        .warning-notice, .info-notice, .success-notice {
             display: flex; align-items: flex-start; gap: 0.75rem;
             padding: 0.875rem; border-radius: 0.5rem; margin-bottom: 1.25rem;
         }
@@ -1193,6 +1267,8 @@ def get_dashboard_html() -> str:
         .warning-notice p { font-size: 0.8125rem; color: var(--accent-warning); }
         .info-notice { background: rgba(99, 102, 241, 0.1); border: 1px solid var(--accent-qwen); }
         .info-notice p { font-size: 0.8125rem; color: var(--accent-qwen); }
+        .success-notice { background: rgba(34, 197, 94, 0.1); border: 1px solid var(--accent-primary); }
+        .success-notice p { font-size: 0.8125rem; color: var(--accent-primary); }
         
         .section-divider { height: 1px; background: var(--border-color); margin: 1.25rem 0; }
         .section-title { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); margin-bottom: 0.75rem; }
@@ -1219,6 +1295,16 @@ def get_dashboard_html() -> str:
         .endpoint-card p { font-size: 0.6875rem; color: var(--text-secondary); }
         
         .hidden { display: none !important; }
+        
+        .workflow-locked {
+            background: rgba(34, 197, 94, 0.1);
+            border: 1px solid var(--accent-primary);
+            border-radius: 0.5rem;
+            padding: 1rem;
+            text-align: center;
+        }
+        .workflow-locked h3 { color: var(--accent-primary); margin-bottom: 0.5rem; }
+        .workflow-locked p { color: var(--text-secondary); font-size: 0.8125rem; }
     </style>
 </head>
 <body>
@@ -1250,54 +1336,63 @@ def get_dashboard_html() -> str:
                     <h2>&#129302; Qwen Code Authentication</h2>
                 </div>
                 <div class="card-body">
-                    <div class="info-notice">
-                        <span>&#128161;</span>
-                        <p><strong>Qwen Code</strong> provides free AI models. Login with your qwen.ai account for 2,000 free requests/day, or use OpenRouter for international access.</p>
+                    <!-- Workflow-locked notice (shown when auth is completed from workflow) -->
+                    <div id="workflowLockedNotice" class="workflow-locked hidden">
+                        <h3>&#10003; Authentication Pre-Configured</h3>
+                        <p id="workflowLockedText">Authentication was configured in the workflow. You can proceed directly to target configuration.</p>
                     </div>
                     
-                    <div class="tabs">
-                        <div class="tab active" data-tab="oauth">Qwen OAuth</div>
-                        <div class="tab" data-tab="apikey">API Key</div>
-                    </div>
-                    
-                    <div id="oauthTab" class="tab-content active">
-                        <div class="info-notice" id="oauthInfo">
+                    <!-- Normal auth UI (hidden when workflow-locked) -->
+                    <div id="authUI">
+                        <div class="info-notice">
                             <span>&#128161;</span>
-                            <p><strong>Recommended:</strong> Qwen OAuth provides 2,000 free requests/day, 60 req/min, with NO token limits and NO regional restrictions!</p>
+                            <p id="authInfoText"><strong>Qwen Code</strong> provides free AI models. Login with your qwen.ai account for 2,000 free requests/day, or use OpenRouter for international access.</p>
                         </div>
                         
-                        <button class="btn btn-primary btn-block" id="loginBtn">
-                            &#128274; Login with qwen.ai Account
-                        </button>
-                        <button class="btn btn-danger btn-block hidden" id="logoutBtn">
-                            &#128275; Logout
-                        </button>
+                        <div class="tabs" id="authTabs">
+                            <div class="tab active" data-tab="oauth">Qwen OAuth</div>
+                            <div class="tab" data-tab="apikey">API Key</div>
+                        </div>
                         
-                        <p style="margin-top: 1rem; font-size: 0.75rem; color: var(--text-secondary); text-align: center;">
-                            Free tier: 2,000 requests/day | 60 requests/min | No token limits
-                        </p>
-                    </div>
-                    
-                    <div id="apikeyTab" class="tab-content">
-                        <div class="section-title">Select API Provider</div>
-                        <div id="endpointCards">
-                            <div class="endpoint-card selected" data-provider="openrouter" data-endpoint="https://openrouter.ai/api/v1">
-                                <h4>&#127760; OpenRouter (via qwen-code)</h4>
-                                <p>1,000 free requests/day - Use when you have an OpenRouter API key</p>
+                        <div id="oauthTab" class="tab-content active">
+                            <div class="info-notice" id="oauthInfo">
+                                <span>&#128161;</span>
+                                <p><strong>Recommended:</strong> Qwen OAuth provides 2,000 free requests/day, 60 req/min, with NO token limits and NO regional restrictions!</p>
                             </div>
+                            
+                            <button class="btn btn-primary btn-block" id="loginBtn">
+                                &#128274; Login with qwen.ai Account
+                            </button>
+                            <button class="btn btn-danger btn-block hidden" id="logoutBtn">
+                                &#128275; Logout
+                            </button>
+                            
+                            <p style="margin-top: 1rem; font-size: 0.75rem; color: var(--text-secondary); text-align: center;">
+                                Free tier: 2,000 requests/day | 60 requests/min | No token limits
+                            </p>
                         </div>
                         
-                        <div class="form-group" style="margin-top: 1rem;">
-                            <label>API Key</label>
-                            <input type="password" id="qwenApiKey" placeholder="Enter your API key">
+                        <div id="apikeyTab" class="tab-content">
+                            <div class="section-title">API Provider</div>
+                            <div id="endpointCards">
+                                <div class="endpoint-card selected" data-provider="openrouter" data-endpoint="https://openrouter.ai/api/v1">
+                                    <h4>&#127760; OpenRouter</h4>
+                                    <p>1,000 free requests/day - Use when you have an OpenRouter API key</p>
+                                </div>
+                            </div>
+                            
+                            <div class="form-group" style="margin-top: 1rem;">
+                                <label>API Key</label>
+                                <input type="password" id="qwenApiKey" placeholder="Enter your OpenRouter API key">
+                            </div>
+                            <div class="form-group">
+                                <label>API Endpoint (auto-filled)</label>
+                                <input type="text" id="qwenApiEndpoint" value="https://openrouter.ai/api/v1" readonly>
+                            </div>
+                            <button class="btn btn-primary btn-block" id="setApiKeyBtn">
+                                &#128273; Set API Key
+                            </button>
                         </div>
-                        <div class="form-group">
-                            <label>API Endpoint (auto-filled based on selection)</label>
-                            <input type="text" id="qwenApiEndpoint" placeholder="https://openrouter.ai/api/v1">
-                        </div>
-                        <button class="btn btn-primary btn-block" id="setApiKeyBtn">
-                            &#128273; Set API Key
-                        </button>
                     </div>
                     
                     <div class="section-divider"></div>
@@ -1585,6 +1680,7 @@ def get_dashboard_html() -> str:
         let ws = null;
         let authWindow = null;
         let availableModels = {};
+        let workflowConfig = null;
         
         // DOM elements
         const authStatus = document.getElementById('authStatus');
@@ -1602,10 +1698,69 @@ def get_dashboard_html() -> str:
         const findingsCount = document.getElementById('findingsCount');
         const logsContainer = document.getElementById('logsContainer');
         const modelCardsContainer = document.getElementById('modelCards');
+        const authUI = document.getElementById('authUI');
+        const workflowLockedNotice = document.getElementById('workflowLockedNotice');
+        const workflowLockedText = document.getElementById('workflowLockedText');
+        const authTabs = document.getElementById('authTabs');
+        const oauthTab = document.getElementById('oauthTab');
+        const apikeyTab = document.getElementById('apikeyTab');
+        
+        // Apply workflow configuration to UI
+        function applyWorkflowConfig(config) {
+            workflowConfig = config;
+            
+            if (!config || !config.provider) {
+                // No workflow config, show normal UI
+                return;
+            }
+            
+            addLog(`Workflow provider: ${config.provider}`);
+            
+            // If auth was completed in workflow, show locked notice
+            if (config.auth_completed) {
+                authUI.classList.add('hidden');
+                workflowLockedNotice.classList.remove('hidden');
+                
+                if (config.oauth_selected) {
+                    workflowLockedText.textContent = 'Qwen OAuth authentication was completed in the workflow. You can proceed directly to target configuration.';
+                } else if (config.openrouter_selected) {
+                    workflowLockedText.textContent = 'OpenRouter API key was configured from repository secrets. You can proceed directly to target configuration.';
+                }
+                return;
+            }
+            
+            // If workflow selected a provider but auth not completed, configure UI accordingly
+            if (config.oauth_selected) {
+                // Show only OAuth tab
+                document.querySelector('.tab[data-tab="apikey"]').classList.add('hidden');
+                document.querySelector('.tab[data-tab="oauth"]').classList.add('active');
+                oauthTab.classList.add('active');
+                apikeyTab.classList.remove('active');
+                
+                document.getElementById('authInfoText').innerHTML = '<strong>Qwen OAuth</strong> was selected in the workflow. Please login with your qwen.ai account to continue.';
+                
+            } else if (config.openrouter_selected) {
+                // Show only API key tab
+                document.querySelector('.tab[data-tab="oauth"]').classList.add('hidden');
+                document.querySelector('.tab[data-tab="apikey"]').classList.add('active');
+                document.querySelector('.tab[data-tab="apikey"]').click();
+                
+                // Auto-fill endpoint
+                document.getElementById('qwenApiEndpoint').value = 'https://openrouter.ai/api/v1';
+                selectedEndpoint = 'https://openrouter.ai/api/v1';
+                selectedProvider = 'openrouter';
+                
+                document.getElementById('authInfoText').innerHTML = '<strong>OpenRouter</strong> was selected in the workflow. Please enter your API key to continue.';
+            }
+        }
         
         // Tab switching
         document.querySelectorAll('.tab').forEach(tab => {
             tab.addEventListener('click', () => {
+                // Don't switch if workflow locked
+                if (workflowConfig && (workflowConfig.oauth_selected || workflowConfig.openrouter_selected)) {
+                    return;
+                }
                 document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
                 document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
                 tab.classList.add('active');
@@ -1654,6 +1809,7 @@ def get_dashboard_html() -> str:
                 case 'connected':
                     if (data.status) updateStatus(data.status);
                     if (data.auth_status) updateAuthStatus(data.auth_status === 'authenticated', data.user_email);
+                    if (data.workflow_config) applyWorkflowConfig(data.workflow_config);
                     break;
                 case 'config_updated':
                     addLog('Configuration updated');
@@ -1777,6 +1933,11 @@ def get_dashboard_html() -> str:
                     checkAuthStatus();
                 }
                 
+                // Apply workflow config if present
+                if (data.workflow_config) {
+                    applyWorkflowConfig(data.workflow_config);
+                }
+                
                 renderModelCards(data.authenticated);
             } catch (error) {
                 console.error('Failed to fetch models:', error);
@@ -1792,11 +1953,16 @@ def get_dashboard_html() -> str:
             const models = Object.entries(availableModels);
             
             if (models.length === 0) {
-                // Show default models
-                availableModels = {
-                    'qwen3-coder-plus': { name: 'qwen3-coder-plus', display_name: 'Qwen3 Coder Plus', description: 'High-performance coding model - 262K context', context_window: 262000, free: true, endpoint: 'dashscope' },
-                    'qwen/qwen3-coder:free': { name: 'qwen/qwen3-coder:free', display_name: 'Qwen3 Coder (OpenRouter)', description: '1,000 free calls/day worldwide', context_window: 128000, free: true, endpoint: 'openrouter' },
-                };
+                // Show default models based on workflow selection
+                if (workflowConfig && workflowConfig.openrouter_selected) {
+                    availableModels = {
+                        'qwen/qwen3-coder:free': { name: 'qwen/qwen3-coder:free', display_name: 'Qwen3 Coder (OpenRouter Free)', description: '1,000 free calls/day worldwide', context_window: 128000, free: true, endpoint: 'openrouter' },
+                    };
+                } else {
+                    availableModels = {
+                        'qwen3-coder-plus': { name: 'qwen3-coder-plus', display_name: 'Qwen3 Coder Plus', description: 'High-performance coding model - 262K context', context_window: 262000, free: true, endpoint: 'qwen_oauth' },
+                    };
+                }
             }
             
             let html = '';
@@ -1810,8 +1976,8 @@ def get_dashboard_html() -> str:
                 const description = model.description || 'Qwen Code model';
                 const contextWindow = model.context_window || 128000;
                 const isFree = model.free !== false;
-                const endpoint = model.endpoint || 'dashscope';
-                const isIntl = endpoint === 'openrouter' || endpoint === 'dashscope_intl';
+                const endpoint = model.endpoint || 'qwen_oauth';
+                const isIntl = endpoint === 'openrouter';
                 
                 html += `
                     <div class="model-card ${isSelected ? 'selected' : ''}" data-model="${escapeHtml(modelId)}">
@@ -1970,6 +2136,10 @@ def get_dashboard_html() -> str:
                 const wasAuthenticated = isAuthenticated;
                 updateAuthStatus(data.authenticated, data.user_email);
                 
+                if (data.workflow_config) {
+                    applyWorkflowConfig(data.workflow_config);
+                }
+                
                 if (data.authenticated && !wasAuthenticated) {
                     addLog('Session restored');
                     await fetchAndRenderModels(true);
@@ -1988,7 +2158,7 @@ def get_dashboard_html() -> str:
             }
             
             if (!isAuthenticated) {
-                alert('Please authenticate with Qwen Code first (use OAuth or enter API key)');
+                alert('Please authenticate first (use OAuth or enter API key)');
                 return;
             }
             
