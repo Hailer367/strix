@@ -6,12 +6,13 @@ name: Strix Autonomous Dashboard (Qwen Code)
 #    - 2,000 free requests per day
 #    - 60 requests per minute rate limit
 #    - NO token limits, NO regional limits
-#    - Just run 'qwen' command and follow browser authentication
-#    - Credentials cached locally for future use
+#    - Automatic browser-based authentication in workflow
+#    - Credentials passed to dashboard automatically
 #
 # 2. OpenRouter (via qwen-code CLI):
 #    - Requires OPENROUTER_API_KEY secret
 #    - 1,000 free requests/day on free tier
+#    - API key and endpoint auto-configured
 
 on:
   workflow_dispatch:
@@ -84,27 +85,25 @@ on:
         default: true
         type: boolean
       
-      # Qwen Code API Provider
+      # Qwen Code API Provider - THIS IS THE KEY SELECTION
       api_provider:
-        description: 'Qwen Code API provider'
-        required: false
+        description: 'Qwen Code API provider (determines authentication flow)'
+        required: true
         default: 'qwen_oauth'
         type: choice
         options:
-          - 'qwen_oauth'    # RECOMMENDED: 2,000 requests/day, no regional limits
-          - 'openrouter'    # 1,000 free requests/day (via qwen-code CLI)
+          - 'qwen_oauth'    # RECOMMENDED: 2,000 requests/day, auth via workflow
+          - 'openrouter'    # 1,000 free requests/day, requires API key secret
       
-      # Model Selection
+      # Model Selection (only applies to OpenRouter - Qwen OAuth has single model)
       qwen_model:
-        description: 'Qwen Code model to use'
+        description: 'Model (OpenRouter only - Qwen OAuth uses default model)'
         required: false
-        default: 'qwen3-coder-plus'
+        default: 'qwen/qwen3-coder:free'
         type: choice
         options:
-          - 'qwen3-coder-plus'         # Qwen OAuth - high performance
-          - 'qwen3-coder-plus-latest'  # Qwen OAuth - latest version
-          - 'qwen3-coder'              # Qwen OAuth - balanced
           - 'qwen/qwen3-coder:free'    # OpenRouter free tier
+          - 'qwen/qwen3-coder'         # OpenRouter paid
       
       # Output Configuration
       output_format:
@@ -152,9 +151,231 @@ env:
   STRIX_USE_QWENCODE: "true"
 
 jobs:
+  # =============================================================================
+  # JOB 1: Qwen OAuth Authentication Flow
+  # This job runs ONLY when qwen_oauth is selected
+  # It initiates the qwen CLI auth and provides login URL to user
+  # =============================================================================
+  qwen_oauth_auth:
+    name: Qwen OAuth Authentication
+    runs-on: ubuntu-latest
+    if: ${{ inputs.api_provider == 'qwen_oauth' }}
+    timeout-minutes: 15
+    outputs:
+      auth_token: ${{ steps.auth.outputs.auth_token }}
+      auth_success: ${{ steps.auth.outputs.auth_success }}
+      auth_url: ${{ steps.auth.outputs.auth_url }}
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Install qwen-code CLI
+        run: |
+          npm install -g @qwen-code/qwen-code@latest
+          echo "::notice::Installed qwen-code CLI for Qwen OAuth authentication"
+      
+      - name: Initiate Qwen OAuth Authentication
+        id: auth
+        run: |
+          echo "=============================================="
+          echo "  🔐 QWEN OAUTH AUTHENTICATION"
+          echo "=============================================="
+          echo ""
+          echo "  Starting Qwen Code CLI authentication..."
+          echo "  This will provide you with a login URL."
+          echo ""
+          
+          # Create a script to capture the auth URL from qwen CLI
+          cat > /tmp/qwen_auth.sh << 'AUTHSCRIPT'
+          #!/bin/bash
+          
+          # Create config directory
+          mkdir -p ~/.qwen
+          
+          # Create a file to capture output
+          AUTH_OUTPUT_FILE="/tmp/qwen_auth_output.txt"
+          AUTH_URL_FILE="/tmp/qwen_auth_url.txt"
+          AUTH_TOKEN_FILE="/tmp/qwen_auth_token.txt"
+          AUTH_STATUS_FILE="/tmp/qwen_auth_status.txt"
+          
+          echo "pending" > "$AUTH_STATUS_FILE"
+          
+          # Start qwen in background and capture output
+          # The qwen CLI outputs the auth URL when started without credentials
+          timeout 300 script -q -c "qwen --help 2>&1 || qwen 2>&1" "$AUTH_OUTPUT_FILE" &
+          QWEN_PID=$!
+          
+          # Wait for auth URL to appear in output
+          MAX_WAIT=30
+          WAITED=0
+          AUTH_URL=""
+          
+          while [ $WAITED -lt $MAX_WAIT ]; do
+            sleep 2
+            WAITED=$((WAITED + 2))
+            
+            # Check for auth URL patterns in output
+            if [ -f "$AUTH_OUTPUT_FILE" ]; then
+              # Look for URLs that match Qwen auth patterns
+              AUTH_URL=$(grep -oE 'https://[a-zA-Z0-9._-]+\.qwen\.ai[^ ]*' "$AUTH_OUTPUT_FILE" 2>/dev/null | head -1)
+              if [ -z "$AUTH_URL" ]; then
+                AUTH_URL=$(grep -oE 'https://chat\.qwen\.ai[^ ]*' "$AUTH_OUTPUT_FILE" 2>/dev/null | head -1)
+              fi
+              if [ -z "$AUTH_URL" ]; then
+                # Check for any auth-related URL
+                AUTH_URL=$(grep -oE 'https://[^ ]+auth[^ ]*' "$AUTH_OUTPUT_FILE" 2>/dev/null | head -1)
+              fi
+              
+              if [ -n "$AUTH_URL" ]; then
+                echo "$AUTH_URL" > "$AUTH_URL_FILE"
+                break
+              fi
+            fi
+          done
+          
+          # If we found an auth URL, output it
+          if [ -n "$AUTH_URL" ]; then
+            echo "found_url" > "$AUTH_STATUS_FILE"
+            echo "$AUTH_URL"
+          else
+            # Check if already authenticated
+            if [ -f ~/.qwen/credentials.json ] || [ -f ~/.qwen/auth.json ]; then
+              echo "already_authenticated" > "$AUTH_STATUS_FILE"
+              echo "Already authenticated with Qwen"
+            else
+              # Generate manual auth URL
+              MANUAL_URL="https://chat.qwen.ai/?app=qwen-code"
+              echo "$MANUAL_URL" > "$AUTH_URL_FILE"
+              echo "manual_url" > "$AUTH_STATUS_FILE"
+              echo "$MANUAL_URL"
+            fi
+          fi
+          
+          # Cleanup
+          kill $QWEN_PID 2>/dev/null || true
+          AUTHSCRIPT
+          
+          chmod +x /tmp/qwen_auth.sh
+          
+          # Run the auth script
+          AUTH_RESULT=$(/tmp/qwen_auth.sh 2>&1)
+          AUTH_STATUS=$(cat /tmp/qwen_auth_status.txt 2>/dev/null || echo "unknown")
+          
+          # Determine the auth URL
+          if [ -f /tmp/qwen_auth_url.txt ]; then
+            AUTH_URL=$(cat /tmp/qwen_auth_url.txt)
+          else
+            # Fallback to manual URL
+            AUTH_URL="https://chat.qwen.ai/?app=qwen-code&redirect_uri=workflow"
+          fi
+          
+          echo ""
+          echo "=============================================="
+          echo "  📍 QWEN OAUTH LOGIN URL"
+          echo "=============================================="
+          echo ""
+          echo "  Please click the link below to authenticate:"
+          echo ""
+          echo "  🔗 $AUTH_URL"
+          echo ""
+          echo "  After logging in with your qwen.ai account,"
+          echo "  the workflow will detect your authentication"
+          echo "  and continue automatically."
+          echo ""
+          echo "  ⏳ Waiting for authentication..."
+          echo "=============================================="
+          
+          # Set outputs
+          echo "auth_url=$AUTH_URL" >> $GITHUB_OUTPUT
+          
+          # Create marker file for dashboard to read
+          echo "$AUTH_URL" > /tmp/qwen_oauth_url.txt
+          
+          # Wait for user to authenticate (poll for credentials)
+          MAX_AUTH_WAIT=600  # 10 minutes
+          AUTH_WAITED=0
+          AUTH_SUCCESS="false"
+          
+          while [ $AUTH_WAITED -lt $MAX_AUTH_WAIT ]; do
+            sleep 10
+            AUTH_WAITED=$((AUTH_WAITED + 10))
+            
+            echo "Waiting for authentication... ($((AUTH_WAITED / 60))m $((AUTH_WAITED % 60))s / 10m)"
+            
+            # Check for credentials file
+            if [ -f ~/.qwen/credentials.json ]; then
+              # Extract token from credentials
+              AUTH_TOKEN=$(cat ~/.qwen/credentials.json | grep -oE '"token":\s*"[^"]+"' | head -1 | cut -d'"' -f4)
+              if [ -z "$AUTH_TOKEN" ]; then
+                AUTH_TOKEN=$(cat ~/.qwen/credentials.json | grep -oE '"access_token":\s*"[^"]+"' | head -1 | cut -d'"' -f4)
+              fi
+              
+              if [ -n "$AUTH_TOKEN" ]; then
+                echo "auth_token=$AUTH_TOKEN" >> $GITHUB_OUTPUT
+                echo "auth_success=true" >> $GITHUB_OUTPUT
+                AUTH_SUCCESS="true"
+                echo ""
+                echo "✅ Authentication successful!"
+                echo "Token acquired and will be passed to dashboard."
+                break
+              fi
+            fi
+            
+            # Also check auth.json
+            if [ -f ~/.qwen/auth.json ]; then
+              AUTH_TOKEN=$(cat ~/.qwen/auth.json | grep -oE '"token":\s*"[^"]+"' | head -1 | cut -d'"' -f4)
+              if [ -z "$AUTH_TOKEN" ]; then
+                AUTH_TOKEN=$(cat ~/.qwen/auth.json | grep -oE '"access_token":\s*"[^"]+"' | head -1 | cut -d'"' -f4)
+              fi
+              
+              if [ -n "$AUTH_TOKEN" ]; then
+                echo "auth_token=$AUTH_TOKEN" >> $GITHUB_OUTPUT
+                echo "auth_success=true" >> $GITHUB_OUTPUT
+                AUTH_SUCCESS="true"
+                echo ""
+                echo "✅ Authentication successful!"
+                echo "Token acquired and will be passed to dashboard."
+                break
+              fi
+            fi
+          done
+          
+          if [ "$AUTH_SUCCESS" != "true" ]; then
+            echo ""
+            echo "⚠️ Authentication timeout. You can still authenticate via the dashboard."
+            echo "auth_success=false" >> $GITHUB_OUTPUT
+            echo "auth_token=" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Display Auth Status
+        run: |
+          echo "=============================================="
+          echo "  QWEN OAUTH STATUS"
+          echo "=============================================="
+          if [ "${{ steps.auth.outputs.auth_success }}" == "true" ]; then
+            echo "  ✅ Authentication: SUCCESS"
+            echo "  Token will be passed to dashboard automatically."
+          else
+            echo "  ⏳ Authentication: PENDING"
+            echo "  You can complete authentication in the dashboard."
+          fi
+          echo "=============================================="
+
+  # =============================================================================
+  # JOB 2: Main Dashboard Job
+  # This runs the dashboard with the selected authentication method
+  # =============================================================================
   dashboard:
     name: Start Dashboard & Run Scan (Qwen Code)
     runs-on: ubuntu-latest
+    needs: [qwen_oauth_auth]
+    if: always()
     timeout-minutes: 780  # 13 hours max (12h scan + 1h buffer)
     
     steps:
@@ -175,7 +396,7 @@ jobs:
       - name: Install qwen-code CLI
         run: |
           npm install -g @qwen-code/qwen-code@latest
-          echo "::notice::Installed qwen-code CLI for Qwen Code authentication"
+          echo "::notice::Installed qwen-code CLI"
       
       - name: Verify Docker Installation
         run: |
@@ -188,12 +409,25 @@ jobs:
           pip install poetry
           poetry install
       
-      - name: Configure Qwen Code Environment
+      - name: Configure Environment Based on Provider Selection
         env:
-          QWENCODE_TOKEN: ${{ secrets.QWENCODE_ACCESS_TOKEN }}
+          # From workflow inputs
+          API_PROVIDER: ${{ inputs.api_provider }}
+          QWEN_MODEL: ${{ inputs.qwen_model }}
+          # From Qwen OAuth job (if ran)
+          OAUTH_TOKEN: ${{ needs.qwen_oauth_auth.outputs.auth_token }}
+          OAUTH_SUCCESS: ${{ needs.qwen_oauth_auth.outputs.auth_success }}
+          # From secrets
           OPENROUTER_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PERPLEXITY_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
         run: |
+          echo "=============================================="
+          echo "  🔧 CONFIGURING ENVIRONMENT"
+          echo "=============================================="
+          echo ""
+          echo "  Selected Provider: $API_PROVIDER"
+          echo ""
+          
           # Calculate total duration
           HOURS=${{ inputs.duration_hours }}
           MINUTES=${{ inputs.duration_minutes }}
@@ -218,51 +452,91 @@ jobs:
           echo "STRIX_SEVERITY_THRESHOLD=${{ inputs.severity_threshold }}" >> $GITHUB_ENV
           echo "STRIX_DEBUG=${{ inputs.debug_mode }}" >> $GITHUB_ENV
           
-          # API Provider and Model configuration
-          API_PROVIDER="${{ inputs.api_provider }}"
-          QWEN_MODEL="${{ inputs.qwen_model }}"
+          # ============================================================
+          # CRITICAL: Set provider-specific configuration
+          # This is what makes the workflow selection functional
+          # ============================================================
           
           echo "STRIX_AI_PROVIDER=qwencode" >> $GITHUB_ENV
           echo "QWENCODE_API_PROVIDER=$API_PROVIDER" >> $GITHUB_ENV
+          echo "STRIX_WORKFLOW_PROVIDER=$API_PROVIDER" >> $GITHUB_ENV
           
-          # Set API endpoint based on provider
-          # Reference: https://github.com/QwenLM/qwen-code
           case "$API_PROVIDER" in
             "qwen_oauth")
-              # Qwen OAuth: 2,000 requests/day, 60 req/min, no token limits, no regional limits
+              echo ""
+              echo "  📍 Qwen OAuth Configuration"
+              echo "  ────────────────────────────"
+              echo "  • API Endpoint: https://chat.qwen.ai/api/v1"
+              echo "  • Free Tier: 2,000 requests/day"
+              echo "  • Rate Limit: 60 requests/min"
+              echo ""
+              
               echo "OPENAI_BASE_URL=https://chat.qwen.ai/api/v1" >> $GITHUB_ENV
               echo "QWENCODE_API_BASE=https://chat.qwen.ai/api/v1" >> $GITHUB_ENV
-              if [ -n "$QWENCODE_TOKEN" ] && [ "$QWENCODE_TOKEN" != "" ]; then
-                echo "OPENAI_API_KEY=$QWENCODE_TOKEN" >> $GITHUB_ENV
-                echo "QWENCODE_ACCESS_TOKEN=$QWENCODE_TOKEN" >> $GITHUB_ENV
-                echo "::notice::Qwen OAuth token configured (2,000 requests/day, no regional limits)"
+              echo "STRIX_LLM=qwencode/qwen3-coder-plus" >> $GITHUB_ENV
+              echo "OPENAI_MODEL=qwen3-coder-plus" >> $GITHUB_ENV
+              
+              # Flag to indicate OAuth was selected in workflow
+              echo "STRIX_OAUTH_SELECTED=true" >> $GITHUB_ENV
+              echo "STRIX_OPENROUTER_SELECTED=false" >> $GITHUB_ENV
+              
+              # If we got a token from the OAuth job, use it
+              if [ "$OAUTH_SUCCESS" == "true" ] && [ -n "$OAUTH_TOKEN" ]; then
+                echo "OPENAI_API_KEY=$OAUTH_TOKEN" >> $GITHUB_ENV
+                echo "QWENCODE_ACCESS_TOKEN=$OAUTH_TOKEN" >> $GITHUB_ENV
+                echo "STRIX_AUTH_COMPLETED=true" >> $GITHUB_ENV
+                echo "::notice::Qwen OAuth token from workflow auth will be used"
+                echo "  ✅ Token from workflow authentication will be used"
               else
-                echo "::warning::No QWENCODE_ACCESS_TOKEN secret found. Please authenticate via dashboard."
+                echo "STRIX_AUTH_COMPLETED=false" >> $GITHUB_ENV
+                echo "::warning::Qwen OAuth auth pending - complete in dashboard"
+                echo "  ⚠️ Authentication not yet completed"
+                echo "  ℹ️ Complete authentication in the dashboard"
               fi
               ;;
+              
             "openrouter")
-              # OpenRouter via qwen-code: 1,000 free requests/day
+              echo ""
+              echo "  📍 OpenRouter Configuration"
+              echo "  ────────────────────────────"
+              echo "  • API Endpoint: https://openrouter.ai/api/v1"
+              echo "  • Free Tier: 1,000 requests/day"
+              echo "  • Model: $QWEN_MODEL"
+              echo ""
+              
               echo "OPENAI_BASE_URL=https://openrouter.ai/api/v1" >> $GITHUB_ENV
               echo "QWENCODE_API_BASE=https://openrouter.ai/api/v1" >> $GITHUB_ENV
+              echo "STRIX_LLM=qwencode/$QWEN_MODEL" >> $GITHUB_ENV
+              echo "OPENAI_MODEL=$QWEN_MODEL" >> $GITHUB_ENV
+              
+              # Flag to indicate OpenRouter was selected in workflow
+              echo "STRIX_OAUTH_SELECTED=false" >> $GITHUB_ENV
+              echo "STRIX_OPENROUTER_SELECTED=true" >> $GITHUB_ENV
+              
+              # Check for OpenRouter API key in secrets
               if [ -n "$OPENROUTER_KEY" ] && [ "$OPENROUTER_KEY" != "" ]; then
                 echo "OPENAI_API_KEY=$OPENROUTER_KEY" >> $GITHUB_ENV
                 echo "QWENCODE_ACCESS_TOKEN=$OPENROUTER_KEY" >> $GITHUB_ENV
-                echo "::notice::OpenRouter API key configured (1,000 free requests/day via qwen-code)"
+                echo "STRIX_AUTH_COMPLETED=true" >> $GITHUB_ENV
+                echo "::notice::OpenRouter API key configured from secrets"
+                echo "  ✅ API key from repository secrets will be used"
               else
-                echo "::warning::No OPENROUTER_API_KEY secret found. Please configure in dashboard."
+                echo "STRIX_AUTH_COMPLETED=false" >> $GITHUB_ENV
+                echo "::warning::No OPENROUTER_API_KEY secret found - enter in dashboard"
+                echo "  ⚠️ No API key found in secrets"
+                echo "  ℹ️ Enter your OpenRouter API key in the dashboard"
               fi
               ;;
           esac
-          
-          # Model configuration
-          echo "OPENAI_MODEL=$QWEN_MODEL" >> $GITHUB_ENV
-          echo "STRIX_LLM=qwencode/$QWEN_MODEL" >> $GITHUB_ENV
           
           # Perplexity for web search (optional)
           if [ -n "$PERPLEXITY_KEY" ] && [ "$PERPLEXITY_KEY" != "" ]; then
             echo "PERPLEXITY_API_KEY=$PERPLEXITY_KEY" >> $GITHUB_ENV
             echo "::notice::Perplexity API key configured for web search"
           fi
+          
+          echo ""
+          echo "=============================================="
       
       - name: Calculate Timeout Minutes
         id: timeout
@@ -331,8 +605,10 @@ jobs:
           echo "tunnel_url=$TUNNEL_URL" >> $GITHUB_OUTPUT
           echo "::notice title=Dashboard URL::$TUNNEL_URL"
       
-      - name: Display Dashboard URL
+      - name: Display Dashboard Information
         run: |
+          API_PROVIDER="${{ inputs.api_provider }}"
+          
           echo "=============================================="
           echo "  🦉 STRIX AUTONOMOUS DASHBOARD"
           echo "  Powered by Qwen Code"
@@ -344,21 +620,42 @@ jobs:
           echo "  ⏱️  Duration: ${{ inputs.duration_hours }}h ${{ inputs.duration_minutes }}m"
           echo "  🔐 Access Level: ${{ inputs.access_level }}"
           echo "  📊 Planning Depth: ${{ inputs.planning_depth }}"
-          echo "  🤖 API Provider: ${{ inputs.api_provider }}"
-          echo "  🧠 Model: ${{ inputs.qwen_model }}"
           echo ""
-          echo "  📝 Authentication Guide:"
-          echo "  ┌─────────────────────────────────────────────────────┐"
-          echo "  │ Qwen OAuth (RECOMMENDED):                          │"
-          echo "  │   • 2,000 requests/day                             │"
-          echo "  │   • 60 requests/min                                │"
-          echo "  │   • NO token limits, NO regional limits            │"
-          echo "  │   • Click 'Login with qwen.ai Account' in dashboard│"
-          echo "  ├─────────────────────────────────────────────────────┤"
-          echo "  │ OpenRouter (via qwen-code):                        │"
-          echo "  │   • 1,000 free requests/day                        │"
-          echo "  │   • Enter API key in dashboard                     │"
-          echo "  └─────────────────────────────────────────────────────┘"
+          
+          if [ "$API_PROVIDER" = "qwen_oauth" ]; then
+            echo "  ┌─────────────────────────────────────────────────────┐"
+            echo "  │  🔐 QWEN OAUTH SELECTED                            │"
+            echo "  ├─────────────────────────────────────────────────────┤"
+            echo "  │  • 2,000 requests/day                              │"
+            echo "  │  • 60 requests/min                                  │"
+            echo "  │  • NO token limits, NO regional limits             │"
+            echo "  ├─────────────────────────────────────────────────────┤"
+            if [ "$STRIX_AUTH_COMPLETED" = "true" ]; then
+              echo "  │  ✅ AUTHENTICATION COMPLETED                       │"
+              echo "  │  Token passed from workflow authentication        │"
+              echo "  │  AI model selection is pre-configured             │"
+            else
+              echo "  │  ⏳ AUTHENTICATION REQUIRED                        │"
+              echo "  │  Complete login in the dashboard                  │"
+            fi
+            echo "  └─────────────────────────────────────────────────────┘"
+          else
+            echo "  ┌─────────────────────────────────────────────────────┐"
+            echo "  │  🌐 OPENROUTER SELECTED                            │"
+            echo "  ├─────────────────────────────────────────────────────┤"
+            echo "  │  • 1,000 free requests/day                         │"
+            echo "  │  • Model: ${{ inputs.qwen_model }}                  │"
+            echo "  │  • Endpoint: https://openrouter.ai/api/v1          │"
+            echo "  ├─────────────────────────────────────────────────────┤"
+            if [ "$STRIX_AUTH_COMPLETED" = "true" ]; then
+              echo "  │  ✅ API KEY CONFIGURED                             │"
+              echo "  │  Using OPENROUTER_API_KEY from secrets            │"
+            else
+              echo "  │  ⏳ API KEY REQUIRED                               │"
+              echo "  │  Enter your OpenRouter API key in dashboard       │"
+            fi
+            echo "  └─────────────────────────────────────────────────────┘"
+          fi
           echo ""
           echo "  ⏳ Waiting up to ${{ inputs.config_wait_minutes }} minutes for configuration..."
           echo "=============================================="
@@ -419,14 +716,28 @@ jobs:
           echo "### Configuration" >> $GITHUB_STEP_SUMMARY
           echo "- **Duration**: ${{ inputs.duration_hours }}h ${{ inputs.duration_minutes }}m" >> $GITHUB_STEP_SUMMARY
           echo "- **AI Provider**: Qwen Code (${{ inputs.api_provider }})" >> $GITHUB_STEP_SUMMARY
-          echo "- **Model**: ${{ inputs.qwen_model }}" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ inputs.api_provider }}" = "openrouter" ]; then
+            echo "- **Model**: ${{ inputs.qwen_model }}" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- **Model**: qwen3-coder-plus (default)" >> $GITHUB_STEP_SUMMARY
+          fi
           echo "- **Planning Depth**: ${{ inputs.planning_depth }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Qwen Code Authentication Methods" >> $GITHUB_STEP_SUMMARY
-          echo "| Method | Free Tier | Features |" >> $GITHUB_STEP_SUMMARY
-          echo "|--------|-----------|----------|" >> $GITHUB_STEP_SUMMARY
-          echo "| **Qwen OAuth** (Recommended) | 2,000 requests/day | No token limits, no regional limits, 60 req/min |" >> $GITHUB_STEP_SUMMARY
-          echo "| OpenRouter (via qwen-code) | 1,000 requests/day | Requires API key |" >> $GITHUB_STEP_SUMMARY
+          echo "### Authentication Method Used" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ inputs.api_provider }}" = "qwen_oauth" ]; then
+            echo "| Setting | Value |" >> $GITHUB_STEP_SUMMARY
+            echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| **Method** | Qwen OAuth |" >> $GITHUB_STEP_SUMMARY
+            echo "| **Free Tier** | 2,000 requests/day |" >> $GITHUB_STEP_SUMMARY
+            echo "| **Rate Limit** | 60 requests/min |" >> $GITHUB_STEP_SUMMARY
+            echo "| **Endpoint** | https://chat.qwen.ai/api/v1 |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| Setting | Value |" >> $GITHUB_STEP_SUMMARY
+            echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| **Method** | OpenRouter |" >> $GITHUB_STEP_SUMMARY
+            echo "| **Free Tier** | 1,000 requests/day |" >> $GITHUB_STEP_SUMMARY
+            echo "| **Endpoint** | https://openrouter.ai/api/v1 |" >> $GITHUB_STEP_SUMMARY
+          fi
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Reference: [qwen-code GitHub](https://github.com/QwenLM/qwen-code)" >> $GITHUB_STEP_SUMMARY
       
