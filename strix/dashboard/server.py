@@ -5,19 +5,17 @@ Strix Dashboard Server
 A FastAPI-based web server that provides a configuration dashboard for
 autonomous bug bounty operations through GitHub Actions.
 
-Modified: Qwen Code CLI is now the sole AI provider (Roo Code removed).
+Qwen Code CLI is the sole AI provider.
 
 Features:
 - Configure-and-Fire: Set all parameters before starting
 - Qwen Code OAuth: Browser-based authentication via qwen.ai
-- Multiple API Endpoints: Support for DashScope, ModelScope, OpenRouter
 - Real-time WebSocket: Live updates on scan progress
 - Advanced Agent Configuration: Fine-tune Strix agent behavior
 
-International Access Options:
-- Qwen OAuth: 2,000 requests/day (requires China access via VPN/proxy)
-- OpenRouter: 1,000 free requests/day worldwide
-- DashScope International: Pay-as-you-go with free credits
+Authentication Options (Reference: https://github.com/QwenLM/qwen-code):
+1. Qwen OAuth (RECOMMENDED): 2,000 requests/day, 60 req/min, no token limits, no regional limits
+2. OpenRouter (via qwen-code CLI): 1,000 free requests/day
 """
 
 import asyncio
@@ -71,10 +69,9 @@ TEMPLATES_DIR = DASHBOARD_DIR / "templates"
 STATIC_DIR = DASHBOARD_DIR / "static"
 
 # Qwen Code CLI configuration
+# Reference: https://github.com/QwenLM/qwen-code
+# Qwen OAuth: 2,000 requests/day, 60 req/min, no token limits, no regional limits
 QWENCODE_AUTH_URL = "https://chat.qwen.ai"
-QWENCODE_API_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-QWENCODE_INTL_API_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
-QWENCODE_MODELSCOPE_URL = "https://api-inference.modelscope.cn/v1"
 QWENCODE_OPENROUTER_URL = "https://openrouter.ai/api/v1"
 QWENCODE_CONFIG_DIR = Path.home() / ".strix"
 QWENCODE_CONFIG_FILE = QWENCODE_CONFIG_DIR / "qwencode_config.json"
@@ -133,8 +130,8 @@ async def fetch_qwencode_models(force_refresh: bool = False) -> dict[str, dict[s
     """
     Fetch available models from Qwen Code API.
     
-    Returns default models with endpoint-specific filtering based on the
-    user's configured API provider.
+    Returns default models based on authentication status.
+    Reference: https://github.com/QwenLM/qwen-code
     
     Args:
         force_refresh: Force refresh from API even if cache is valid
@@ -156,60 +153,56 @@ async def fetch_qwencode_models(force_refresh: bool = False) -> dict[str, dict[s
     # Determine which models to show based on authentication status
     api_provider = dashboard_state.qwencode_api_provider
     
-    # Filter models by endpoint
+    # Filter models by provider
     filtered_models = {}
     for model_id, model_data in QWENCODE_MODELS.items():
-        endpoint = model_data.get("endpoint", "dashscope")
+        endpoint = model_data.get("endpoint", "qwen_oauth")
         
         # Show all models if not authenticated yet
         if dashboard_state.auth_status != AuthStatus.AUTHENTICATED:
             filtered_models[model_id] = model_data.copy()
             continue
             
-        # Filter by provider
+        # Filter by provider - show models matching the auth provider
         if api_provider == "openrouter" and endpoint == "openrouter":
             filtered_models[model_id] = model_data.copy()
-        elif api_provider == "modelscope" and endpoint == "modelscope":
-            filtered_models[model_id] = model_data.copy()
-        elif api_provider in ("qwen_oauth", "dashscope", "dashscope_intl") and endpoint == "dashscope":
-            filtered_models[model_id] = model_data.copy()
-        elif not dashboard_state.auth_status == AuthStatus.AUTHENTICATED:
-            # Show all models if not authenticated
+        elif api_provider == "qwen_oauth" and endpoint in ("qwen_oauth", "dashscope"):
             filtered_models[model_id] = model_data.copy()
     
     # If authenticated, try to fetch models from API
     if dashboard_state.auth_status == AuthStatus.AUTHENTICATED and dashboard_state.qwencode_access_token:
-        api_base = dashboard_state.qwencode_api_endpoint or QWENCODE_API_URL
+        api_base = dashboard_state.qwencode_api_endpoint
         
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(
-                    f"{api_base}/models",
-                    headers={"Authorization": f"Bearer {dashboard_state.qwencode_access_token}"},
-                    timeout=30,
-                )
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    model_list = data.get("data", []) if isinstance(data, dict) else data if isinstance(data, list) else []
+        if api_base:
+            try:
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(
+                        f"{api_base}/models",
+                        headers={"Authorization": f"Bearer {dashboard_state.qwencode_access_token}"},
+                        timeout=30,
+                    )
                     
-                    for model in model_list:
-                        model_id = model.get("id", "")
-                        if model_id and ("qwen" in model_id.lower() or "coder" in model_id.lower()):
-                            filtered_models[model_id] = {
-                                "name": model_id,
-                                "display_name": model.get("name", model_id),
-                                "description": model.get("description", "Qwen coding model"),
-                                "context_window": model.get("context_length", 131000),
-                                "free": True,
-                                "provider": "qwencode",
-                                "capabilities": ["code", "chat"],
-                                "speed": "fast",
-                                "endpoint": api_provider,
-                            }
-                    logger.info(f"Fetched {len(filtered_models)} models from Qwen Code API")
-        except Exception as e:
-            logger.warning(f"Failed to fetch models from API: {e}")
+                    if response.status_code == 200:
+                        data = response.json()
+                        model_list = data.get("data", []) if isinstance(data, dict) else data if isinstance(data, list) else []
+                        
+                        for model in model_list:
+                            model_id = model.get("id", "")
+                            if model_id and ("qwen" in model_id.lower() or "coder" in model_id.lower()):
+                                filtered_models[model_id] = {
+                                    "name": model_id,
+                                    "display_name": model.get("name", model_id),
+                                    "description": model.get("description", "Qwen coding model"),
+                                    "context_window": model.get("context_length", 131000),
+                                    "free": True,
+                                    "provider": "qwencode",
+                                    "capabilities": ["code", "chat"],
+                                    "speed": "fast",
+                                    "endpoint": api_provider,
+                                }
+                        logger.info(f"Fetched {len(filtered_models)} models from Qwen Code API")
+            except Exception as e:
+                logger.warning(f"Failed to fetch models from API: {e}")
     
     _cached_qwencode_models = filtered_models if filtered_models else QWENCODE_MODELS.copy()
     _qwencode_models_cache_time = time.time()
@@ -242,25 +235,24 @@ async def lifespan(app: FastAPI) -> Any:
     
     if qwen_env_token and dashboard_state.auth_status != AuthStatus.AUTHENTICATED:
         # Determine provider from API base URL
-        api_provider = "manual"
+        api_provider = "qwen_oauth"  # Default to qwen_oauth
+        api_endpoint = f"{QWENCODE_AUTH_URL}/api/v1"
+        
         if qwen_env_base:
             if "openrouter" in qwen_env_base.lower():
                 api_provider = "openrouter"
-            elif "modelscope" in qwen_env_base.lower():
-                api_provider = "modelscope"
-            elif "dashscope-intl" in qwen_env_base.lower():
-                api_provider = "dashscope_intl"
-            elif "dashscope" in qwen_env_base.lower():
-                api_provider = "dashscope"
+                api_endpoint = QWENCODE_OPENROUTER_URL
+            else:
+                api_endpoint = qwen_env_base
         
         dashboard_state.auth_status = AuthStatus.AUTHENTICATED
         dashboard_state.qwencode_access_token = qwen_env_token
-        dashboard_state.qwencode_api_endpoint = qwen_env_base or QWENCODE_API_URL
+        dashboard_state.qwencode_api_endpoint = api_endpoint
         dashboard_state.qwencode_api_provider = api_provider
         save_qwencode_credentials(
             qwen_env_token,
             expires_at=time.time() + 3600 * 24 * 365,
-            api_endpoint=dashboard_state.qwencode_api_endpoint,
+            api_endpoint=api_endpoint,
             api_provider=api_provider,
         )
         logger.info(f"Using Qwen Code token from environment (provider: {api_provider})")
@@ -572,9 +564,13 @@ def create_app(config: DashboardConfig | None = None) -> FastAPI:
     async def qwencode_login_redirect(request: Request) -> dict[str, Any]:
         """Get the Qwen Code OAuth login URL.
         
-        Note: Qwen OAuth requires access to qwen.ai which may need VPN/proxy
-        for users outside China. Alternative endpoints (OpenRouter, DashScope Intl)
-        are available for international users.
+        Qwen OAuth provides:
+        - 2,000 free requests per day
+        - 60 requests per minute rate limit
+        - NO token limits, NO regional limits
+        - Automatic credential refresh
+        
+        Reference: https://github.com/QwenLM/qwen-code
         """
         state = secrets.token_urlsafe(16)
         dashboard_state.oauth_state = state
@@ -596,8 +592,7 @@ def create_app(config: DashboardConfig | None = None) -> FastAPI:
             "auth_url": auth_url,
             "state": state,
             "callback_url": callback_url,
-            "instructions": "Sign in with your qwen.ai account to get 2,000 free requests per day",
-            "note": "If you're outside China, you may need VPN access to qwen.ai, or use OpenRouter/DashScope Intl instead.",
+            "instructions": "Sign in with your qwen.ai account to get 2,000 free requests per day (no regional limits!)",
         }
     
     @app.get("/api/qwencode/callback", response_model=None)
@@ -626,18 +621,19 @@ def create_app(config: DashboardConfig | None = None) -> FastAPI:
             dashboard_state.qwencode_token_expires_at = time.time() + 3600 * 24 * 30  # 30 days
             dashboard_state.auth_status = AuthStatus.AUTHENTICATED
             dashboard_state.qwencode_api_provider = "qwen_oauth"
-            dashboard_state.qwencode_api_endpoint = QWENCODE_API_URL
+            # Qwen OAuth uses chat.qwen.ai API endpoint
+            dashboard_state.qwencode_api_endpoint = f"{QWENCODE_AUTH_URL}/api/v1"
             
             save_qwencode_credentials(
                 access_token=received_token,
                 expires_at=dashboard_state.qwencode_token_expires_at,
-                api_endpoint=QWENCODE_API_URL,
+                api_endpoint=dashboard_state.qwencode_api_endpoint,
                 api_provider="qwen_oauth",
             )
             
             os.environ["QWENCODE_ACCESS_TOKEN"] = received_token
             os.environ["OPENAI_API_KEY"] = received_token
-            os.environ["OPENAI_BASE_URL"] = QWENCODE_API_URL
+            os.environ["OPENAI_BASE_URL"] = dashboard_state.qwencode_api_endpoint
             
             _cached_qwencode_models = None
             _qwencode_models_cache_time = 0
@@ -680,13 +676,14 @@ def create_app(config: DashboardConfig | None = None) -> FastAPI:
     
     @app.post("/api/qwencode/set-token")
     async def qwencode_set_token(request: Request) -> dict[str, Any]:
-        """Manually set Qwen Code API token and endpoint.
+        """Manually set Qwen Code API token.
         
         This is used for:
-        1. OpenRouter API key (international users)
-        2. DashScope API key (Alibaba Cloud users)
-        3. ModelScope API key (China users)
-        4. Manual token from Qwen Code CLI
+        1. OpenRouter API key (via qwen-code CLI for 1,000 requests/day)
+        2. Manual token from Qwen Code CLI
+        
+        IMPORTANT: For OpenRouter, must go through qwen-code CLI, not directly to OpenRouter
+        Reference: https://github.com/QwenLM/qwen-code
         """
         global _cached_qwencode_models, _qwencode_models_cache_time
         
@@ -694,30 +691,23 @@ def create_app(config: DashboardConfig | None = None) -> FastAPI:
             data = await request.json()
             token = data.get("token")
             api_endpoint = data.get("api_endpoint")
-            api_provider = data.get("api_provider", "manual")
+            api_provider = data.get("api_provider", "openrouter")
             
             if not token:
                 raise HTTPException(status_code=400, detail="Token is required")
             
-            # Determine provider and endpoint
-            if api_endpoint:
-                if "openrouter" in api_endpoint.lower():
-                    api_provider = "openrouter"
-                elif "modelscope" in api_endpoint.lower():
-                    api_provider = "modelscope"
-                elif "dashscope-intl" in api_endpoint.lower():
-                    api_provider = "dashscope_intl"
-                elif "dashscope" in api_endpoint.lower():
-                    api_provider = "dashscope"
+            # Only support qwen_oauth and openrouter
+            if api_provider not in ("qwen_oauth", "openrouter"):
+                api_provider = "openrouter"
+            
+            # Set endpoint based on provider
+            if api_provider == "openrouter" or (api_endpoint and "openrouter" in api_endpoint.lower()):
+                api_provider = "openrouter"
+                api_endpoint = QWENCODE_OPENROUTER_URL
             else:
-                # Set default endpoint based on provider
-                endpoint_map = {
-                    "openrouter": QWENCODE_OPENROUTER_URL,
-                    "modelscope": QWENCODE_MODELSCOPE_URL,
-                    "dashscope": QWENCODE_API_URL,
-                    "dashscope_intl": QWENCODE_INTL_API_URL,
-                }
-                api_endpoint = endpoint_map.get(api_provider, QWENCODE_API_URL)
+                # Default to qwen_oauth
+                api_provider = "qwen_oauth"
+                api_endpoint = f"{QWENCODE_AUTH_URL}/api/v1"
             
             dashboard_state.qwencode_access_token = token
             dashboard_state.qwencode_token_expires_at = time.time() + 3600 * 24 * 365  # 1 year
@@ -833,24 +823,17 @@ def update_progress(progress: int, action: str) -> None:
 
 
 def get_endpoint_recommendation() -> dict[str, Any]:
-    """Get recommendation for API endpoint based on user's location."""
+    """Get recommendation for API endpoint."""
     return {
-        "china_users": {
-            "recommended": "qwen_oauth",
-            "reason": "Direct Qwen OAuth gives 2,000 free requests/day with no token limits",
-            "alternatives": ["modelscope", "dashscope"],
+        "recommended": "qwen_oauth",
+        "reason": "Qwen OAuth provides 2,000 free requests/day, 60 req/min, no token limits, no regional limits",
+        "alternatives": {
+            "openrouter": {
+                "description": "OpenRouter via qwen-code CLI - 1,000 free requests/day",
+                "use_case": "When you prefer API key authentication",
+            },
         },
-        "international_users": {
-            "recommended": "openrouter",
-            "reason": "OpenRouter provides 1,000 free requests/day worldwide without VPN",
-            "alternatives": ["dashscope_intl"],
-            "note": "For full 2,000 requests/day, use VPN to access qwen.ai or deploy QwenBridge proxy",
-        },
-        "github_actions": {
-            "recommended": "openrouter",
-            "reason": "GitHub Actions runners are international, OpenRouter works without extra setup",
-            "note": "Set QWENCODE_ACCESS_TOKEN and QWENCODE_API_BASE secrets",
-        },
+        "reference": "https://github.com/QwenLM/qwen-code",
     }
 
 
@@ -1015,7 +998,7 @@ def get_auth_result_html(success: bool, error: str | None = None) -> str:
         <div class="icon">&#10060;</div>
         <h1>Authentication Failed</h1>
         <p class="error">{error or "Unknown error occurred"}</p>
-        <p>This may happen if you're outside China and can't access qwen.ai</p>
+        <p>Please try again or check your internet connection.</p>
         
         <div class="alternative">
             <h3>&#127760; International Users</h3>
@@ -1278,9 +1261,9 @@ def get_dashboard_html() -> str:
                     </div>
                     
                     <div id="oauthTab" class="tab-content active">
-                        <div class="warning-notice" id="chinaNotice">
-                            <span>&#127760;</span>
-                            <p><strong>Note:</strong> Qwen OAuth requires access to qwen.ai (China). International users can use OpenRouter or enter API key manually in the "API Key" tab.</p>
+                        <div class="info-notice" id="oauthInfo">
+                            <span>&#128161;</span>
+                            <p><strong>Recommended:</strong> Qwen OAuth provides 2,000 free requests/day, 60 req/min, with NO token limits and NO regional restrictions!</p>
                         </div>
                         
                         <button class="btn btn-primary btn-block" id="loginBtn">
@@ -1298,21 +1281,9 @@ def get_dashboard_html() -> str:
                     <div id="apikeyTab" class="tab-content">
                         <div class="section-title">Select API Provider</div>
                         <div id="endpointCards">
-                            <div class="endpoint-card" data-provider="openrouter" data-endpoint="https://openrouter.ai/api/v1">
-                                <h4>&#127760; OpenRouter (International)</h4>
-                                <p>1,000 free requests/day worldwide - No VPN needed</p>
-                            </div>
-                            <div class="endpoint-card" data-provider="dashscope_intl" data-endpoint="https://dashscope-intl.aliyuncs.com/compatible-mode/v1">
-                                <h4>&#9729; DashScope International</h4>
-                                <p>Alibaba Cloud API for international users - Pay-as-you-go</p>
-                            </div>
-                            <div class="endpoint-card" data-provider="dashscope" data-endpoint="https://dashscope.aliyuncs.com/compatible-mode/v1">
-                                <h4>&#127464;&#127475; DashScope (China)</h4>
-                                <p>Alibaba Cloud API for China users</p>
-                            </div>
-                            <div class="endpoint-card" data-provider="modelscope" data-endpoint="https://api-inference.modelscope.cn/v1">
-                                <h4>&#127464;&#127475; ModelScope (China)</h4>
-                                <p>2,000 free calls/day - Requires China access</p>
+                            <div class="endpoint-card selected" data-provider="openrouter" data-endpoint="https://openrouter.ai/api/v1">
+                                <h4>&#127760; OpenRouter (via qwen-code)</h4>
+                                <p>1,000 free requests/day - Use when you have an OpenRouter API key</p>
                             </div>
                         </div>
                         
