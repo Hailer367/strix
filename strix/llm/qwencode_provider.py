@@ -44,7 +44,15 @@ logger = logging.getLogger(__name__)
 # Based on the official documentation: https://github.com/QwenLM/qwen-code
 # Qwen OAuth: 2,000 requests/day, 60 req/min, no token limits, no regional limits
 QWENCODE_AUTH_URL = "https://chat.qwen.ai"
+QWENCODE_API_URL = "https://chat.qwen.ai/api/v1"
 QWENCODE_OPENROUTER_API_URL = "https://openrouter.ai/api/v1"
+
+# OAuth Device Authorization Flow endpoints (per official qwen-code CLI)
+# Reference: https://github.com/QwenLM/qwen-code/issues/784
+QWENCODE_DEVICE_CODE_ENDPOINT = "https://chat.qwen.ai/api/v1/device/code"
+QWENCODE_DEVICE_TOKEN_ENDPOINT = "https://chat.qwen.ai/api/v1/device/token"
+QWENCODE_AUTHORIZE_URL = "https://chat.qwen.ai/authorize"
+QWENCODE_CLIENT_ID = "qwen-code"
 
 # Default config file location
 QWENCODE_CONFIG_DIR = Path.home() / ".strix"
@@ -352,12 +360,149 @@ class QwenCodeProvider:
         logger.warning("Token refresh not supported for Qwen Code OAuth, re-authentication required")
         return False
 
+    def _initiate_device_auth(self) -> dict[str, Any] | None:
+        """
+        Initiate OAuth Device Authorization Flow.
+        
+        This is the proper authentication method used by the official qwen-code CLI.
+        Reference: https://github.com/QwenLM/qwen-code
+        
+        Returns:
+            Dictionary with device_code, user_code, verification_uri, etc. or None on failure
+        """
+        try:
+            with httpx.Client(timeout=30) as client:
+                # Request device code from Qwen OAuth server
+                response = client.post(
+                    QWENCODE_DEVICE_CODE_ENDPOINT,
+                    json={
+                        "client_id": QWENCODE_CLIENT_ID,
+                        "scope": "openid profile email"
+                    },
+                    headers={
+                        "Content-Type": "application/json",
+                        "User-Agent": "qwen-code-strix/1.0"
+                    }
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    logger.info("Device authorization initiated successfully")
+                    return data
+                else:
+                    logger.warning(f"Device auth request failed: {response.status_code} - {response.text}")
+                    
+        except Exception as e:
+            logger.warning(f"Failed to initiate device authorization: {e}")
+        
+        return None
+
+    def _poll_for_token(self, device_code: str, interval: int = 5, timeout: int = 300) -> str | None:
+        """
+        Poll the token endpoint for the access token.
+        
+        This is part of the OAuth Device Authorization Flow.
+        
+        Args:
+            device_code: The device code received from device auth initiation
+            interval: Polling interval in seconds
+            timeout: Maximum time to wait for token
+            
+        Returns:
+            Access token if successful, None otherwise
+        """
+        start_time = time.time()
+        poll_interval = max(interval, 5)  # Minimum 5 seconds per OAuth spec
+        
+        while time.time() - start_time < timeout:
+            time.sleep(poll_interval)
+            
+            try:
+                with httpx.Client(timeout=30) as client:
+                    response = client.post(
+                        QWENCODE_DEVICE_TOKEN_ENDPOINT,
+                        json={
+                            "client_id": QWENCODE_CLIENT_ID,
+                            "device_code": device_code,
+                            "grant_type": "urn:ietf:params:oauth:grant-type:device_code"
+                        },
+                        headers={
+                            "Content-Type": "application/json",
+                            "User-Agent": "qwen-code-strix/1.0"
+                        }
+                    )
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        access_token = data.get("access_token")
+                        if access_token:
+                            logger.info("Token obtained successfully via device flow")
+                            return access_token
+                            
+                    elif response.status_code == 400:
+                        data = response.json()
+                        error = data.get("error", "")
+                        
+                        if error == "authorization_pending":
+                            # User hasn't authorized yet, continue polling
+                            continue
+                        elif error == "slow_down":
+                            # Need to slow down polling
+                            poll_interval += 5
+                            continue
+                        elif error == "expired_token":
+                            logger.warning("Device code expired")
+                            return None
+                        elif error == "access_denied":
+                            logger.warning("Access denied by user")
+                            return None
+                        else:
+                            logger.warning(f"Token request error: {error}")
+                            
+            except Exception as e:
+                logger.warning(f"Token polling error: {e}")
+        
+        logger.warning("Token polling timed out")
+        return None
+
+    def get_device_auth_url(self) -> tuple[str, str | None, str | None]:
+        """
+        Get the device authorization URL for display to the user.
+        
+        This is useful for headless/CI environments where the user needs
+        to authenticate on a different device.
+        
+        Returns:
+            Tuple of (auth_url, user_code, device_code)
+        """
+        device_auth = self._initiate_device_auth()
+        
+        if device_auth:
+            verification_uri = device_auth.get("verification_uri", QWENCODE_AUTHORIZE_URL)
+            verification_uri_complete = device_auth.get("verification_uri_complete")
+            user_code = device_auth.get("user_code")
+            device_code = device_auth.get("device_code")
+            
+            # Prefer the complete URI with user_code embedded
+            if verification_uri_complete:
+                auth_url = verification_uri_complete
+            elif user_code:
+                auth_url = f"{verification_uri}?user_code={user_code}&client={QWENCODE_CLIENT_ID}"
+            else:
+                auth_url = verification_uri
+                
+            return auth_url, user_code, device_code
+        
+        # Fallback URL
+        return f"{QWENCODE_AUTHORIZE_URL}?client={QWENCODE_CLIENT_ID}", None, None
+
     def login(self, timeout: int = 300) -> bool:
         """
         Initiate OAuth login flow for Qwen Code CLI.
 
-        This opens a browser window for the user to authenticate with
-        their qwen.ai account.
+        This uses the OAuth Device Authorization Flow, which is the same
+        method used by the official qwen-code CLI. It's suitable for both
+        interactive and headless environments.
 
         Args:
             timeout: Maximum time to wait for authentication (seconds)
@@ -389,8 +534,63 @@ class QwenCodeProvider:
             logger.info(f"Using manual Qwen Code access token (provider: {api_provider})")
             return True
 
-        # Start local callback server
-        callback_port = 18766  # Different port from Roo Code
+        # Try Device Authorization Flow (preferred method per official qwen-code CLI)
+        logger.info("Initiating OAuth Device Authorization Flow...")
+        device_auth = self._initiate_device_auth()
+        
+        if device_auth:
+            verification_uri = device_auth.get("verification_uri", QWENCODE_AUTHORIZE_URL)
+            verification_uri_complete = device_auth.get("verification_uri_complete")
+            user_code = device_auth.get("user_code")
+            device_code = device_auth.get("device_code")
+            expires_in = device_auth.get("expires_in", 600)
+            interval = device_auth.get("interval", 5)
+            
+            # Build the auth URL
+            if verification_uri_complete:
+                auth_url = verification_uri_complete
+            elif user_code:
+                auth_url = f"{verification_uri}?user_code={user_code}&client={QWENCODE_CLIENT_ID}"
+            else:
+                auth_url = verification_uri
+            
+            print("\n🤖 Qwen Code OAuth Device Authorization")
+            print("   ==========================================")
+            print("")
+            print("   Please open this URL in your browser:")
+            print(f"   🔗 {auth_url}")
+            print("")
+            if user_code:
+                print(f"   📋 User Code: {user_code}")
+                print("")
+            print(f"   ⏳ This code expires in {expires_in // 60} minutes")
+            print("   ==========================================\n")
+            
+            # Try to open browser automatically
+            try:
+                webbrowser.open(auth_url)
+            except Exception as e:
+                logger.warning(f"Failed to open browser: {e}")
+                print(f"   ⚠️  Could not open browser automatically: {e}")
+            
+            # Poll for token
+            if device_code:
+                access_token = self._poll_for_token(device_code, interval, min(timeout, expires_in))
+                
+                if access_token:
+                    self.credentials = QwenCodeCredentials(
+                        access_token=access_token,
+                        expires_at=time.time() + 3600 * 24 * 30,  # 30 days
+                        api_provider="qwen_oauth",
+                    )
+                    self._save_credentials()
+                    logger.info("Successfully authenticated with Qwen Code CLI via device flow")
+                    print("✅ Authentication successful!")
+                    return True
+        
+        # Fallback to local callback server method (for desktop environments)
+        logger.info("Device flow failed, falling back to local callback server...")
+        callback_port = 18766
         server = HTTPServer(("localhost", callback_port), QwenCodeAuthHandler)
         server.timeout = timeout
 
@@ -402,10 +602,9 @@ class QwenCodeProvider:
         server_thread = Thread(target=server.handle_request, daemon=True)
         server_thread.start()
 
-        # Open browser for authentication
+        # Open browser for authentication with callback
         callback_url = f"http://localhost:{callback_port}/callback"
-        # Use the Qwen AI sign-in page with redirect
-        auth_url = f"{QWENCODE_AUTH_URL}/?redirect_uri={callback_url}&app=strix"
+        auth_url = f"{QWENCODE_AUTHORIZE_URL}?redirect_uri={callback_url}&client={QWENCODE_CLIENT_ID}"
 
         logger.info(f"Opening browser for Qwen Code authentication: {auth_url}")
         print("\n🤖 Opening browser for Qwen Code CLI authentication...")
@@ -414,7 +613,7 @@ class QwenCodeProvider:
 
         try:
             webbrowser.open(auth_url)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.warning(f"Failed to open browser: {e}")
             print(f"   ⚠️  Could not open browser automatically: {e}")
 
