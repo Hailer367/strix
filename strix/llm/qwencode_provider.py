@@ -4,11 +4,20 @@ Qwen Code CLI Provider Integration for Strix
 This module provides integration with Qwen Code CLI's AI models,
 allowing Strix to use Qwen Code's models for AI-powered penetration testing.
 
-Qwen Code CLI provides:
-- Zero configuration: Easy OAuth authentication via qwen.ai
-- Free models: Access to Qwen3-Coder models via OAuth (2,000 requests/day)
-- OpenAI-compatible API: Works with OpenRouter, ModelScope, and Alibaba Cloud
-- Terminal-based AI assistant optimized for coding tasks
+Qwen Code CLI provides TWO authentication methods:
+
+1. Qwen OAuth (RECOMMENDED - Start in 30 seconds):
+   - Just run 'qwen' command and follow browser authentication
+   - 2,000 free requests per day
+   - 60 requests per minute rate limit
+   - NO token limits, NO regional limits
+   - Automatic credential refresh
+   - Zero cost for individual users
+
+2. OpenAI-Compatible API (via OpenRouter):
+   - Requires API key from OpenRouter
+   - 1,000 free requests/day on free tier
+   - Must go through qwen-code CLI for proper routing
 
 Reference: https://github.com/QwenLM/qwen-code
 Authentication: https://qwen.ai OAuth flow
@@ -33,9 +42,8 @@ logger = logging.getLogger(__name__)
 
 # Qwen Code CLI API endpoints
 # Based on the official documentation: https://github.com/QwenLM/qwen-code
+# Qwen OAuth: 2,000 requests/day, 60 req/min, no token limits, no regional limits
 QWENCODE_AUTH_URL = "https://chat.qwen.ai"
-QWENCODE_API_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-QWENCODE_INTERNATIONAL_API_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 QWENCODE_OPENROUTER_API_URL = "https://openrouter.ai/api/v1"
 
 # Default config file location
@@ -45,63 +53,68 @@ QWENCODE_CONFIG_FILE = QWENCODE_CONFIG_DIR / "qwencode_config.json"
 # Qwen Code CLI models - fetched dynamically when authenticated
 # These are fallback models for offline scenarios
 # Reference: https://github.com/QwenLM/qwen-code
+#
+# Two authentication methods:
+# 1. Qwen OAuth: 2,000 requests/day, 60 req/min, no token limits, no regional limits
+# 2. OpenRouter: 1,000 free requests/day (via qwen-code CLI)
 QWENCODE_MODELS: dict[str, dict[str, Any]] = {
     "qwen3-coder-plus": {
         "name": "qwen3-coder-plus",
         "display_name": "Qwen3 Coder Plus",
-        "description": "Advanced Qwen3 coding model with enhanced capabilities",
-        "context_window": 131072,
+        "description": "Advanced Qwen3 coding model with enhanced capabilities - 262K context",
+        "context_window": 262000,
         "free": True,
         "provider": "qwencode",
         "capabilities": ["code", "chat", "analysis"],
         "speed": "fast",
+        "endpoint": "qwen_oauth",
     },
     "qwen3-coder-plus-latest": {
         "name": "qwen3-coder-plus-latest",
         "display_name": "Qwen3 Coder Plus (Latest)",
         "description": "Latest version of Qwen3 coding model",
-        "context_window": 131072,
+        "context_window": 262000,
         "free": True,
         "provider": "qwencode",
         "capabilities": ["code", "chat", "analysis"],
         "speed": "fast",
+        "endpoint": "qwen_oauth",
     },
-    "Qwen/Qwen3-Coder-480B-A35B-Instruct": {
-        "name": "Qwen/Qwen3-Coder-480B-A35B-Instruct",
-        "display_name": "Qwen3 Coder 480B (ModelScope)",
-        "description": "Qwen3 Coder 480B model via ModelScope (2,000 free calls/day)",
-        "context_window": 256000,
+    "qwen3-coder": {
+        "name": "qwen3-coder",
+        "display_name": "Qwen3 Coder",
+        "description": "Balanced coding model for general development tasks - 131K context",
+        "context_window": 131000,
         "free": True,
-        "provider": "modelscope",
-        "capabilities": ["code", "chat", "analysis", "vision"],
-        "speed": "moderate",
+        "provider": "qwencode",
+        "capabilities": ["code", "chat"],
+        "speed": "fast",
+        "endpoint": "qwen_oauth",
     },
     "qwen/qwen3-coder:free": {
         "name": "qwen/qwen3-coder:free",
-        "display_name": "Qwen3 Coder (OpenRouter Free)",
-        "description": "Qwen3 Coder via OpenRouter free tier (1,000 calls/day)",
+        "display_name": "Qwen3 Coder (OpenRouter)",
+        "description": "Qwen3 Coder via OpenRouter - 1,000 free requests/day",
         "context_window": 128000,
         "free": True,
         "provider": "openrouter",
         "capabilities": ["code", "chat"],
         "speed": "fast",
-    },
-    "qwen/qwen3-max": {
-        "name": "qwen/qwen3-max",
-        "display_name": "Qwen3 Max (OpenRouter)",
-        "description": "Qwen3 Max model via OpenRouter",
-        "context_window": 32000,
-        "free": False,
-        "provider": "openrouter",
-        "capabilities": ["code", "chat", "reasoning"],
-        "speed": "moderate",
+        "endpoint": "openrouter",
     },
 }
 
 
 @dataclass
 class QwenCodeCredentials:
-    """Qwen Code CLI authentication credentials."""
+    """Qwen Code CLI authentication credentials.
+    
+    Reference: https://github.com/QwenLM/qwen-code
+    
+    Two authentication methods:
+    1. qwen_oauth: 2,000 requests/day, 60 req/min, no token limits, no regional limits
+    2. openrouter: 1,000 free requests/day (via qwen-code CLI)
+    """
 
     access_token: str
     refresh_token: str | None = None
@@ -109,7 +122,7 @@ class QwenCodeCredentials:
     user_email: str | None = None
     user_id: str | None = None
     session_token: str | None = None  # For session-based auth
-    api_provider: str = "qwen_oauth"  # qwen_oauth, openrouter, alibaba, modelscope
+    api_provider: str = "qwen_oauth"  # qwen_oauth or openrouter
 
     def is_expired(self) -> bool:
         """Check if the token is expired."""
@@ -272,12 +285,20 @@ class QwenCodeProvider:
     Qwen Code CLI Provider for Strix.
 
     This provider allows Strix to use Qwen Code CLI's AI models for
-    penetration testing. Supports multiple authentication methods:
+    penetration testing. Supports TWO authentication methods:
     
-    Authentication methods:
-    1. Qwen OAuth via browser (opens chat.qwen.ai) - 2,000 requests/day free
-    2. Manual API key via QWENCODE_API_KEY environment variable
-    3. OpenRouter API key for qwen models
+    1. Qwen OAuth (RECOMMENDED):
+       - Run 'qwen' command and follow browser authentication
+       - 2,000 free requests per day
+       - 60 requests per minute rate limit
+       - NO token limits, NO regional limits
+       - Automatic credential refresh
+    
+    2. OpenRouter (via qwen-code CLI):
+       - Set QWENCODE_API_KEY or OPENAI_API_KEY environment variable
+       - 1,000 free requests/day on free tier
+    
+    Reference: https://github.com/QwenLM/qwen-code
     """
 
     def __init__(self) -> None:
@@ -356,14 +377,8 @@ class QwenCodeProvider:
             api_base = os.getenv("QWENCODE_API_BASE", "")
             if "openrouter" in api_base.lower():
                 api_provider = "openrouter"
-            elif "modelscope" in api_base.lower():
-                api_provider = "modelscope"
-            elif "dashscope-intl" in api_base.lower():
-                api_provider = "alibaba_intl"
-            elif "dashscope" in api_base.lower():
-                api_provider = "alibaba"
             else:
-                api_provider = "manual"
+                api_provider = "qwen_oauth"
                 
             self.credentials = QwenCodeCredentials(
                 access_token=manual_token,
@@ -441,18 +456,14 @@ class QwenCodeProvider:
             provider = self.credentials.api_provider
             if provider == "openrouter":
                 return QWENCODE_OPENROUTER_API_URL
-            elif provider == "alibaba_intl":
-                return QWENCODE_INTERNATIONAL_API_URL
-            elif provider in ("modelscope",):
-                return "https://api-inference.modelscope.cn/v1"
         
         # Check environment variable for custom API base
         custom_base = os.getenv("QWENCODE_API_BASE")
         if custom_base:
             return custom_base
             
-        # Default to Alibaba Cloud (China) API
-        return QWENCODE_API_URL
+        # Default to Qwen OAuth API
+        return f"{QWENCODE_AUTH_URL}/api/v1"
 
     def fetch_available_models(self, force_refresh: bool = False) -> dict[str, dict[str, Any]]:
         """
