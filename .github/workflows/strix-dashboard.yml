@@ -693,27 +693,39 @@ jobs:
               echo ""
               echo "  📍 Qwen OAuth Configuration"
               echo "  ────────────────────────────"
-              echo "  • API Endpoint: https://chat.qwen.ai/api/v1"
+              echo "  • Auth Flow: OAuth Device Authorization via qwen.ai"
+              echo "  • API Endpoint: DashScope (OpenAI-compatible)"
               echo "  • Free Tier: 2,000 requests/day"
               echo "  • Rate Limit: 60 requests/min"
               echo ""
+              echo "  ⚠️  NOTE: The chat.qwen.ai endpoint is NOT OpenAI-compatible."
+              echo "      Using DashScope API for LiteLLM integration."
+              echo ""
               
-              echo "OPENAI_BASE_URL=https://chat.qwen.ai/api/v1" >> $GITHUB_ENV
-              echo "QWENCODE_API_BASE=https://chat.qwen.ai/api/v1" >> $GITHUB_ENV
-              echo "STRIX_LLM=qwencode/qwen3-coder-plus" >> $GITHUB_ENV
-              echo "OPENAI_MODEL=qwen3-coder-plus" >> $GITHUB_ENV
+              # CRITICAL FIX: Use DashScope (OpenAI-compatible) instead of chat.qwen.ai
+              # The chat.qwen.ai/api/v1 endpoint is NOT an OpenAI-compatible API
+              # and causes the 'str' object has no attribute 'model_dump' error.
+              # 
+              # DashScope API is Alibaba Cloud's OpenAI-compatible endpoint for Qwen models.
+              # Reference: https://qwenlm.github.io/qwen-code-docs/en/users/configuration/auth/
+              echo "OPENAI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1" >> $GITHUB_ENV
+              echo "QWENCODE_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1" >> $GITHUB_ENV
+              echo "STRIX_LLM=qwencode/qwen-coder-plus-latest" >> $GITHUB_ENV
+              echo "OPENAI_MODEL=qwen-coder-plus-latest" >> $GITHUB_ENV
               
               # Flag to indicate OAuth was selected in workflow
               echo "STRIX_OAUTH_SELECTED=true" >> $GITHUB_ENV
               echo "STRIX_OPENROUTER_SELECTED=false" >> $GITHUB_ENV
+              echo "QWENCODE_API_PROVIDER=dashscope" >> $GITHUB_ENV
               
               # If we got a token from the OAuth job, use it
               if [ "$OAUTH_SUCCESS" == "true" ] && [ -n "$OAUTH_TOKEN" ]; then
                 echo "OPENAI_API_KEY=$OAUTH_TOKEN" >> $GITHUB_ENV
                 echo "QWENCODE_ACCESS_TOKEN=$OAUTH_TOKEN" >> $GITHUB_ENV
                 echo "STRIX_AUTH_COMPLETED=true" >> $GITHUB_ENV
-                echo "::notice::Qwen OAuth token from workflow auth will be used"
+                echo "::notice::Qwen OAuth token obtained - using with DashScope API"
                 echo "  ✅ Token from workflow authentication will be used"
+                echo "  ✅ API requests routed to DashScope (OpenAI-compatible)"
               else
                 echo "STRIX_AUTH_COMPLETED=false" >> $GITHUB_ENV
                 echo "::warning::Qwen OAuth auth pending - complete in dashboard"
