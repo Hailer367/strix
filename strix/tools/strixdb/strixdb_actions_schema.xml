@@ -8,7 +8,12 @@
         scripts, exploits, knowledge, tools, methods, and anything else useful
         for future security testing engagements.
         
-        Categories:
+        SIMPLIFIED CONFIGURATION:
+        - Repository is always named "StrixDB"
+        - Only needs STRIXDB_TOKEN (GitHub PAT) to be set
+        - Owner is automatically detected from the token
+        
+        Default Categories:
         - scripts: Automation scripts, shell scripts, utilities
         - exploits: Working exploits and PoCs
         - knowledge: Security knowledge, research notes, documentation
@@ -21,7 +26,43 @@
         - payloads: Useful payloads for attacks
         - templates: Report and code templates
         - notes: Quick notes and findings
+        
+        NEW: You can create custom categories using strixdb_create_category()!
     </description>
+
+    <tool name="strixdb_create_category">
+        <description>
+            Create a NEW custom category in StrixDB.
+            
+            Use this when existing categories don't fit your content.
+            The category will be created immediately and is ready for use.
+            
+            Examples of custom categories you might create:
+            - mobile_exploits: Mobile app security exploits
+            - api_attacks: API-specific attack techniques
+            - cloud_misconfigs: Cloud misconfiguration findings
+            - forensics: Digital forensics scripts and tools
+            - malware: Malware samples and analysis tools
+        </description>
+        <parameters>
+            <parameter name="category_name" type="string" required="true">
+                Name for the new category (lowercase, no spaces, underscores OK)
+            </parameter>
+            <parameter name="description" type="string" required="false">
+                Description of what this category is for
+            </parameter>
+        </parameters>
+        <returns>
+            Dictionary with operation result including success status and category info
+        </returns>
+        <example>
+            Create a new category for mobile exploits:
+            strixdb_create_category(
+                category_name="mobile_exploits",
+                description="Exploits and PoCs for mobile applications (iOS/Android)"
+            )
+        </example>
+    </tool>
 
     <tool name="strixdb_save">
         <description>
@@ -36,12 +77,12 @@
             - Anything else useful for future engagements
             
             Be an enthusiastic collector! If something might be useful later, save it.
+            
+            NOTE: If the category doesn't exist, it will be created automatically!
         </description>
         <parameters>
             <parameter name="category" type="string" required="true">
-                Category for the item. Valid categories:
-                scripts, exploits, knowledge, libraries, sources, methods,
-                tools, configs, wordlists, payloads, templates, notes
+                Category for the item. Can be existing or new category name.
             </parameter>
             <parameter name="name" type="string" required="true">
                 Name of the item (will be sanitized for filename)
@@ -212,29 +253,34 @@
     <tool name="strixdb_get_categories">
         <description>
             Get all available categories in StrixDB with descriptions and item counts.
+            
+            Shows both default and custom categories.
         </description>
         <parameters>
             <!-- No parameters required -->
         </parameters>
         <returns>
-            Dictionary with category information including names, descriptions, and item counts
+            Dictionary with category information including names, descriptions, 
+            item counts, and whether each is a custom category
         </returns>
     </tool>
 
-    <tool name="strixdb_create_directory">
+    <tool name="strixdb_get_config_status">
         <description>
-            Create a subdirectory within a category for organization.
+            Get the current StrixDB configuration status.
+            
+            Use this to debug configuration issues or check if StrixDB is properly set up.
         </description>
         <parameters>
-            <parameter name="category" type="string" required="true">
-                Parent category
-            </parameter>
-            <parameter name="subdirectory" type="string" required="true">
-                Name of subdirectory to create
-            </parameter>
+            <!-- No parameters required -->
         </parameters>
         <returns>
-            Dictionary with operation result
+            Dictionary with configuration status including:
+            - configured: Whether StrixDB is configured
+            - connection_status: Connection test result
+            - repository: Repository path
+            - token_set: Whether token is set
+            - setup_instructions: How to configure if not set up
         </returns>
     </tool>
 
@@ -278,55 +324,6 @@
         </parameters>
         <returns>
             Dictionary with import result
-        </returns>
-    </tool>
-
-    <tool name="strixdb_tag_item">
-        <description>
-            Add or replace tags for an existing item.
-        </description>
-        <parameters>
-            <parameter name="category" type="string" required="true">
-                Category of the item
-            </parameter>
-            <parameter name="name" type="string" required="true">
-                Name of the item
-            </parameter>
-            <parameter name="tags" type="array" required="true">
-                Tags to add or set
-            </parameter>
-            <parameter name="append" type="boolean" required="false">
-                If true, append to existing tags; if false, replace (default: true)
-            </parameter>
-        </parameters>
-        <returns>
-            Dictionary with operation result
-        </returns>
-    </tool>
-
-    <tool name="strixdb_get_recent">
-        <description>
-            Get recently added or modified items.
-        </description>
-        <parameters>
-            <parameter name="limit" type="integer" required="false">
-                Maximum number of items (default: 10)
-            </parameter>
-        </parameters>
-        <returns>
-            Dictionary with recent items including timestamps and actions
-        </returns>
-    </tool>
-
-    <tool name="strixdb_sync">
-        <description>
-            Sync with StrixDB and get current status.
-        </description>
-        <parameters>
-            <!-- No parameters required -->
-        </parameters>
-        <returns>
-            Dictionary with sync status and current stats
         </returns>
     </tool>
 </tool_definitions>

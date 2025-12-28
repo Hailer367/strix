@@ -6,7 +6,12 @@ in a permanent GitHub repository (StrixDB). The agent acts as an enthusiastic co
 automatically storing scripts, tools, exploits, methods, knowledge, and other useful
 items for future reference across all engagements.
 
-Categories supported:
+SIMPLIFIED CONFIGURATION (v2.0):
+- Repository is always named "StrixDB" 
+- Token comes from STRIXDB_TOKEN environment variable (set via GitHub Secrets)
+- The owner is automatically detected from the token
+
+Categories supported (can be extended dynamically):
 - scripts: Automation scripts and tools
 - exploits: Working exploits and PoCs
 - knowledge: Security knowledge and notes
@@ -15,43 +20,46 @@ Categories supported:
 - methods: Attack methodologies
 - tools: Custom security tools
 - configs: Configuration files and templates
+- wordlists: Custom wordlists for fuzzing
+- payloads: Useful payloads for attacks
+- templates: Report and code templates
+- notes: Quick notes and findings
+
+The AI can create NEW categories dynamically using strixdb_create_category()!
 
 Environment Variables:
-- STRIXDB_REPO: GitHub repository name (e.g., "username/StrixDB")
-- STRIXDB_TOKEN: GitHub personal access token with repo permissions
+- STRIXDB_TOKEN: GitHub personal access token with repo permissions (REQUIRED)
+- STRIXDB_REPO: Override repository name (optional, defaults to "StrixDB")
 - STRIXDB_BRANCH: Branch to use (default: "main")
 """
 
 from .strixdb_actions import (
+    strixdb_create_category,
+    strixdb_delete,
+    strixdb_export,
+    strixdb_get,
+    strixdb_get_categories,
+    strixdb_get_config_status,
+    strixdb_get_stats,
+    strixdb_import_item,
+    strixdb_list,
     strixdb_save,
     strixdb_search,
-    strixdb_get,
-    strixdb_list,
     strixdb_update,
-    strixdb_delete,
-    strixdb_get_categories,
-    strixdb_create_directory,
-    strixdb_get_stats,
-    strixdb_export,
-    strixdb_import_item,
-    strixdb_tag_item,
-    strixdb_get_recent,
-    strixdb_sync,
 )
 
+
 __all__ = [
+    "strixdb_create_category",
+    "strixdb_delete",
+    "strixdb_export",
+    "strixdb_get",
+    "strixdb_get_categories",
+    "strixdb_get_config_status",
+    "strixdb_get_stats",
+    "strixdb_import_item",
+    "strixdb_list",
     "strixdb_save",
     "strixdb_search",
-    "strixdb_get",
-    "strixdb_list",
     "strixdb_update",
-    "strixdb_delete",
-    "strixdb_get_categories",
-    "strixdb_create_directory",
-    "strixdb_get_stats",
-    "strixdb_export",
-    "strixdb_import_item",
-    "strixdb_tag_item",
-    "strixdb_get_recent",
-    "strixdb_sync",
 ]

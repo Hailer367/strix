@@ -4,6 +4,14 @@ StrixDB Actions - GitHub-based persistent storage for AI agent artifacts.
 This module provides tools for the AI agent to interact with StrixDB,
 a permanent GitHub repository for storing and retrieving useful artifacts
 like scripts, exploits, tools, knowledge, methods, and more.
+
+CONFIGURATION:
+- The StrixDB repository is always named "StrixDB" and is owned by the user
+- Authentication is via STRIXDB_TOKEN (GitHub token from repository secrets)
+- The token is automatically retrieved from GitHub Actions secrets
+
+IMPORTANT: StrixDB uses a fixed repository name "StrixDB" for simplicity.
+The repository owner is determined from the token's associated user.
 """
 
 from __future__ import annotations
@@ -19,11 +27,13 @@ from typing import Any
 
 import requests
 
+from strix.tools.registry import register_tool
+
 
 logger = logging.getLogger(__name__)
 
-# Valid categories for StrixDB
-VALID_CATEGORIES = [
+# Default categories (can be extended dynamically by the AI)
+DEFAULT_CATEGORIES = [
     "scripts",
     "exploits",
     "knowledge",
@@ -54,12 +64,53 @@ CATEGORY_DESCRIPTIONS = {
     "notes": "Quick notes and temporary findings",
 }
 
+# Runtime storage for dynamically created categories
+_dynamic_categories: set[str] = set()
+
 
 def _get_strixdb_config() -> dict[str, str]:
-    """Get StrixDB configuration from environment variables."""
-    repo = os.getenv("STRIXDB_REPO", "")
+    """
+    Get StrixDB configuration.
+    
+    The repository name is always 'StrixDB'.
+    The owner is determined by fetching the authenticated user from the token.
+    Token comes from STRIXDB_TOKEN environment variable (set via GitHub Secrets).
+    """
     token = os.getenv("STRIXDB_TOKEN", "")
     branch = os.getenv("STRIXDB_BRANCH", "main")
+    
+    # Repository name is always StrixDB
+    repo_name = "StrixDB"
+    
+    # Get the owner from the token
+    owner = ""
+    if token:
+        try:
+            response = requests.get(
+                "https://api.github.com/user",
+                headers=_get_headers(token),
+                timeout=10,
+            )
+            if response.status_code == 200:
+                owner = response.json().get("login", "")
+        except requests.RequestException:
+            pass
+    
+    # Allow override via environment for flexibility
+    repo_override = os.getenv("STRIXDB_REPO", "")
+    if repo_override:
+        # If full repo path is provided (owner/repo), use it
+        if "/" in repo_override:
+            return {
+                "repo": repo_override,
+                "token": token,
+                "branch": branch,
+                "api_base": "https://api.github.com",
+            }
+        # Otherwise treat as just repo name with detected owner
+        repo_name = repo_override
+    
+    repo = f"{owner}/{repo_name}" if owner else ""
     
     return {
         "repo": repo,
@@ -102,6 +153,11 @@ def _get_file_path(category: str, name: str, extension: str = ".json") -> str:
     return f"{category}/{sanitized_name}{extension}"
 
 
+def _get_valid_categories() -> list[str]:
+    """Get all valid categories (default + dynamically created)."""
+    return list(set(DEFAULT_CATEGORIES) | _dynamic_categories)
+
+
 def _create_metadata(
     name: str,
     description: str,
@@ -123,6 +179,119 @@ def _create_metadata(
     }
 
 
+def _ensure_category_exists(category: str, config: dict[str, str]) -> bool:
+    """
+    Ensure a category directory exists in StrixDB.
+    Creates it if it doesn't exist.
+    Returns True if successful, False otherwise.
+    """
+    if not config["repo"] or not config["token"]:
+        return False
+    
+    try:
+        # Check if directory exists
+        url = f"{config['api_base']}/repos/{config['repo']}/contents/{category}"
+        response = requests.get(url, headers=_get_headers(config["token"]), timeout=30)
+        
+        if response.status_code == 200:
+            return True  # Already exists
+        
+        if response.status_code == 404:
+            # Create the directory with a README
+            readme_content = f"""# {category.title()}
+
+This category was automatically created by StrixDB.
+
+{CATEGORY_DESCRIPTIONS.get(category, 'Custom category for storing related items.')}
+
+## Contents
+
+Items in this category will be listed here as they are added.
+"""
+            readme_encoded = base64.b64encode(readme_content.encode()).decode()
+            
+            create_url = f"{config['api_base']}/repos/{config['repo']}/contents/{category}/README.md"
+            create_response = requests.put(
+                create_url,
+                headers=_get_headers(config["token"]),
+                json={
+                    "message": f"[StrixDB] Create category: {category}",
+                    "content": readme_encoded,
+                    "branch": config["branch"],
+                },
+                timeout=30,
+            )
+            
+            if create_response.status_code in (200, 201):
+                _dynamic_categories.add(category)
+                logger.info(f"[StrixDB] Created new category: {category}")
+                return True
+        
+        return False
+        
+    except requests.RequestException as e:
+        logger.exception(f"[StrixDB] Failed to ensure category exists: {e}")
+        return False
+
+
+@register_tool(sandbox_execution=False)
+def strixdb_create_category(
+    agent_state: Any,
+    category_name: str,
+    description: str = "",
+) -> dict[str, Any]:
+    """
+    Create a new category in StrixDB.
+    
+    The AI agent can dynamically create new categories as needed.
+    This is useful when existing categories don't fit the content.
+    
+    Args:
+        agent_state: Current agent state
+        category_name: Name of the new category (lowercase, no spaces)
+        description: Description of what this category is for
+    
+    Returns:
+        Dictionary with operation result
+    """
+    config = _get_strixdb_config()
+    
+    if not config["repo"] or not config["token"]:
+        return {
+            "success": False,
+            "error": "StrixDB not configured. Ensure STRIXDB_TOKEN is set.",
+        }
+    
+    # Sanitize category name
+    category_name = category_name.lower().replace(" ", "_")
+    category_name = re.sub(r'[^\w]', '', category_name)
+    
+    if not category_name:
+        return {
+            "success": False,
+            "error": "Invalid category name. Use lowercase letters and underscores only.",
+        }
+    
+    # Update description if provided
+    if description:
+        CATEGORY_DESCRIPTIONS[category_name] = description
+    
+    # Create the category
+    if _ensure_category_exists(category_name, config):
+        return {
+            "success": True,
+            "message": f"Category '{category_name}' is ready to use",
+            "category": category_name,
+            "description": description or CATEGORY_DESCRIPTIONS.get(category_name, ""),
+        }
+    
+    return {
+        "success": False,
+        "error": f"Failed to create category '{category_name}'",
+    }
+
+
+@register_tool(sandbox_execution=False)
 def strixdb_save(
     agent_state: Any,
     category: str,
@@ -138,9 +307,11 @@ def strixdb_save(
     The AI agent uses this to permanently store useful artifacts like scripts,
     exploits, knowledge, tools, and other items for future reference.
     
+    If the category doesn't exist, it will be created automatically.
+    
     Args:
         agent_state: Current agent state
-        category: Category for the item (scripts, exploits, knowledge, etc.)
+        category: Category for the item (can be new or existing)
         name: Name of the item
         content: Content to save
         description: Description of the item
@@ -155,14 +326,19 @@ def strixdb_save(
     if not config["repo"] or not config["token"]:
         return {
             "success": False,
-            "error": "StrixDB not configured. Set STRIXDB_REPO and STRIXDB_TOKEN environment variables.",
+            "error": "StrixDB not configured. Ensure STRIXDB_TOKEN is set in your GitHub secrets.",
+            "hint": "Add STRIXDB_TOKEN to your repository secrets with a GitHub PAT that has repo access.",
             "item": None,
         }
     
-    if category not in VALID_CATEGORIES:
+    # Sanitize category name
+    category = category.lower().replace(" ", "_")
+    
+    # Ensure category exists (create if needed)
+    if not _ensure_category_exists(category, config):
         return {
             "success": False,
-            "error": f"Invalid category '{category}'. Valid categories: {', '.join(VALID_CATEGORIES)}",
+            "error": f"Failed to access or create category '{category}'",
             "item": None,
         }
     
@@ -274,6 +450,7 @@ def strixdb_save(
         }
 
 
+@register_tool(sandbox_execution=False)
 def strixdb_search(
     agent_state: Any,
     query: str,
@@ -386,6 +563,7 @@ def strixdb_search(
         }
 
 
+@register_tool(sandbox_execution=False)
 def strixdb_get(
     agent_state: Any,
     category: str,
@@ -499,6 +677,7 @@ def strixdb_get(
         }
 
 
+@register_tool(sandbox_execution=False)
 def strixdb_list(
     agent_state: Any,
     category: str | None = None,
@@ -526,7 +705,7 @@ def strixdb_list(
     
     try:
         items = []
-        categories_to_list = [category] if category else VALID_CATEGORIES
+        categories_to_list = [category] if category else _get_valid_categories()
         
         for cat in categories_to_list:
             url = f"{config['api_base']}/repos/{config['repo']}/contents/{cat}"
@@ -541,7 +720,7 @@ def strixdb_list(
                 for file in files:
                     name = file.get("name", "")
                     # Skip metadata files
-                    if name.endswith("_meta.json"):
+                    if name.endswith("_meta.json") or name == "README.md":
                         continue
                     
                     items.append({
@@ -570,6 +749,7 @@ def strixdb_list(
         }
 
 
+@register_tool(sandbox_execution=False)
 def strixdb_update(
     agent_state: Any,
     category: str,
@@ -612,6 +792,7 @@ def strixdb_update(
     )
 
 
+@register_tool(sandbox_execution=False)
 def strixdb_delete(
     agent_state: Any,
     category: str,
@@ -718,6 +899,7 @@ def strixdb_delete(
         }
 
 
+@register_tool(sandbox_execution=False)
 def strixdb_get_categories(agent_state: Any) -> dict[str, Any]:
     """
     Get all available categories in StrixDB with their descriptions.
@@ -731,11 +913,15 @@ def strixdb_get_categories(agent_state: Any) -> dict[str, Any]:
     config = _get_strixdb_config()
     
     categories = []
-    for cat, desc in CATEGORY_DESCRIPTIONS.items():
+    all_categories = _get_valid_categories()
+    
+    for cat in all_categories:
+        desc = CATEGORY_DESCRIPTIONS.get(cat, "Custom category")
         cat_info = {
             "name": cat,
             "description": desc,
             "item_count": 0,
+            "is_custom": cat in _dynamic_categories,
         }
         
         # Get item count if StrixDB is configured
@@ -751,7 +937,9 @@ def strixdb_get_categories(agent_state: Any) -> dict[str, Any]:
                     files = response.json()
                     # Count non-metadata files
                     cat_info["item_count"] = sum(
-                        1 for f in files if not f.get("name", "").endswith("_meta.json")
+                        1 for f in files 
+                        if not f.get("name", "").endswith("_meta.json") 
+                        and f.get("name") != "README.md"
                     )
             except requests.RequestException:
                 pass
@@ -762,75 +950,11 @@ def strixdb_get_categories(agent_state: Any) -> dict[str, Any]:
         "success": True,
         "categories": categories,
         "total_categories": len(categories),
+        "hint": "You can create new categories using strixdb_create_category()",
     }
 
 
-def strixdb_create_directory(
-    agent_state: Any,
-    category: str,
-    subdirectory: str,
-) -> dict[str, Any]:
-    """
-    Create a subdirectory within a category.
-    
-    Args:
-        agent_state: Current agent state
-        category: Parent category
-        subdirectory: Name of the subdirectory to create
-    
-    Returns:
-        Dictionary with operation result
-    """
-    config = _get_strixdb_config()
-    
-    if not config["repo"] or not config["token"]:
-        return {
-            "success": False,
-            "error": "StrixDB not configured",
-        }
-    
-    if category not in VALID_CATEGORIES:
-        return {
-            "success": False,
-            "error": f"Invalid category '{category}'",
-        }
-    
-    try:
-        # Create a placeholder file to create the directory
-        path = f"{category}/{_sanitize_name(subdirectory)}/.gitkeep"
-        content = base64.b64encode(b"# StrixDB subdirectory").decode()
-        
-        url = f"{config['api_base']}/repos/{config['repo']}/contents/{path}"
-        response = requests.put(
-            url,
-            headers=_get_headers(config["token"]),
-            json={
-                "message": f"[StrixDB] Create directory {category}/{subdirectory}",
-                "content": content,
-                "branch": config["branch"],
-            },
-            timeout=30,
-        )
-        
-        if response.status_code in (200, 201):
-            return {
-                "success": True,
-                "message": f"Created directory '{subdirectory}' in category '{category}'",
-                "path": f"{category}/{subdirectory}",
-            }
-        
-        return {
-            "success": False,
-            "error": f"Failed to create directory: {response.status_code}",
-        }
-        
-    except requests.RequestException as e:
-        return {
-            "success": False,
-            "error": f"Request failed: {e!s}",
-        }
-
-
+@register_tool(sandbox_execution=False)
 def strixdb_get_stats(agent_state: Any) -> dict[str, Any]:
     """
     Get statistics about the StrixDB repository.
@@ -872,7 +996,7 @@ def strixdb_get_stats(agent_state: Any) -> dict[str, Any]:
         category_counts = {}
         total_items = 0
         
-        for cat in VALID_CATEGORIES:
+        for cat in _get_valid_categories():
             cat_url = f"{config['api_base']}/repos/{config['repo']}/contents/{cat}"
             cat_response = requests.get(
                 cat_url,
@@ -882,7 +1006,11 @@ def strixdb_get_stats(agent_state: Any) -> dict[str, Any]:
             
             if cat_response.status_code == 200:
                 files = cat_response.json()
-                count = sum(1 for f in files if not f.get("name", "").endswith("_meta.json"))
+                count = sum(
+                    1 for f in files 
+                    if not f.get("name", "").endswith("_meta.json")
+                    and f.get("name") != "README.md"
+                )
                 category_counts[cat] = count
                 total_items += count
             else:
@@ -909,6 +1037,62 @@ def strixdb_get_stats(agent_state: Any) -> dict[str, Any]:
         }
 
 
+@register_tool(sandbox_execution=False)
+def strixdb_get_config_status(agent_state: Any) -> dict[str, Any]:
+    """
+    Get the current StrixDB configuration status.
+    
+    This is useful for debugging configuration issues.
+    
+    Args:
+        agent_state: Current agent state
+    
+    Returns:
+        Dictionary with configuration status
+    """
+    config = _get_strixdb_config()
+    
+    is_configured = bool(config["repo"] and config["token"])
+    
+    # Test connection if configured
+    connection_status = "not_tested"
+    if is_configured:
+        try:
+            url = f"{config['api_base']}/repos/{config['repo']}"
+            response = requests.get(
+                url,
+                headers=_get_headers(config["token"]),
+                timeout=10,
+            )
+            if response.status_code == 200:
+                connection_status = "connected"
+            elif response.status_code == 404:
+                connection_status = "repository_not_found"
+            elif response.status_code == 401:
+                connection_status = "authentication_failed"
+            else:
+                connection_status = f"error_{response.status_code}"
+        except requests.RequestException as e:
+            connection_status = f"connection_error: {e!s}"
+    
+    return {
+        "success": True,
+        "configured": is_configured,
+        "connection_status": connection_status,
+        "repository": config["repo"] if is_configured else None,
+        "branch": config["branch"],
+        "token_set": bool(config["token"]),
+        "setup_instructions": (
+            "To configure StrixDB:\n"
+            "1. Create a GitHub repository named 'StrixDB'\n"
+            "2. Create a GitHub Personal Access Token (PAT) with 'repo' scope\n"
+            "3. Add the token as STRIXDB_TOKEN in your repository secrets\n"
+            "4. The workflow will automatically pass the token to Strix"
+        ) if not is_configured else None,
+    }
+
+
+@register_tool(sandbox_execution=False)
 def strixdb_export(
     agent_state: Any,
     category: str | None = None,
@@ -967,6 +1151,7 @@ def strixdb_export(
     }
 
 
+@register_tool(sandbox_execution=False)
 def strixdb_import_item(
     agent_state: Any,
     item_data: dict[str, Any],
@@ -998,168 +1183,3 @@ def strixdb_import_item(
         tags=item_data.get("tags", []),
         content_type=item_data.get("content_type", "text"),
     )
-
-
-def strixdb_tag_item(
-    agent_state: Any,
-    category: str,
-    name: str,
-    tags: list[str],
-    append: bool = True,
-) -> dict[str, Any]:
-    """
-    Add or replace tags for an item.
-    
-    Args:
-        agent_state: Current agent state
-        category: Category of the item
-        name: Name of the item
-        tags: Tags to add or set
-        append: If True, append to existing tags; if False, replace
-    
-    Returns:
-        Dictionary with operation result
-    """
-    existing = strixdb_get(agent_state, category, name)
-    
-    if not existing["success"]:
-        return existing
-    
-    existing_metadata = existing["item"].get("metadata", {})
-    
-    if append:
-        existing_tags = existing_metadata.get("tags", [])
-        new_tags = list(set(existing_tags + tags))
-    else:
-        new_tags = tags
-    
-    return strixdb_update(
-        agent_state,
-        category=category,
-        name=name,
-        content=existing["item"]["content"],
-        tags=new_tags,
-    )
-
-
-def strixdb_get_recent(
-    agent_state: Any,
-    limit: int = 10,
-) -> dict[str, Any]:
-    """
-    Get recently added or modified items.
-    
-    Args:
-        agent_state: Current agent state
-        limit: Maximum number of items to return
-    
-    Returns:
-        Dictionary with recent items
-    """
-    config = _get_strixdb_config()
-    
-    if not config["repo"] or not config["token"]:
-        return {
-            "success": False,
-            "error": "StrixDB not configured",
-            "items": [],
-        }
-    
-    try:
-        # Get recent commits
-        url = f"{config['api_base']}/repos/{config['repo']}/commits"
-        params = {"per_page": limit * 2}  # Fetch more to filter
-        
-        response = requests.get(
-            url,
-            headers=_get_headers(config["token"]),
-            params=params,
-            timeout=30,
-        )
-        
-        if response.status_code != 200:
-            return {
-                "success": False,
-                "error": "Failed to get recent commits",
-                "items": [],
-            }
-        
-        commits = response.json()
-        recent_items = []
-        seen_paths = set()
-        
-        for commit in commits:
-            message = commit.get("commit", {}).get("message", "")
-            
-            # Parse StrixDB commit messages
-            if "[StrixDB]" in message:
-                # Extract item info from commit
-                # Get commit details to find changed files
-                commit_url = commit.get("url", "")
-                if commit_url:
-                    commit_response = requests.get(
-                        commit_url,
-                        headers=_get_headers(config["token"]),
-                        timeout=10,
-                    )
-                    if commit_response.status_code == 200:
-                        files = commit_response.json().get("files", [])
-                        for file in files:
-                            path = file.get("filename", "")
-                            if path and path not in seen_paths and not path.endswith("_meta.json"):
-                                parts = path.split("/")
-                                if len(parts) >= 2 and parts[0] in VALID_CATEGORIES:
-                                    seen_paths.add(path)
-                                    recent_items.append({
-                                        "name": parts[-1],
-                                        "category": parts[0],
-                                        "path": path,
-                                        "action": file.get("status", "modified"),
-                                        "timestamp": commit.get("commit", {}).get("author", {}).get("date", ""),
-                                    })
-            
-            if len(recent_items) >= limit:
-                break
-        
-        return {
-            "success": True,
-            "items": recent_items[:limit],
-            "total": len(recent_items),
-        }
-        
-    except requests.RequestException as e:
-        return {
-            "success": False,
-            "error": f"Request failed: {e!s}",
-            "items": [],
-        }
-
-
-def strixdb_sync(agent_state: Any) -> dict[str, Any]:
-    """
-    Sync local knowledge with StrixDB (placeholder for future implementation).
-    
-    This function can be extended to sync local agent knowledge with StrixDB.
-    
-    Args:
-        agent_state: Current agent state
-    
-    Returns:
-        Dictionary with sync status
-    """
-    config = _get_strixdb_config()
-    
-    if not config["repo"] or not config["token"]:
-        return {
-            "success": False,
-            "error": "StrixDB not configured",
-        }
-    
-    # Get current stats
-    stats = strixdb_get_stats(agent_state)
-    
-    return {
-        "success": True,
-        "message": "StrixDB sync completed",
-        "stats": stats.get("stats", {}),
-    }

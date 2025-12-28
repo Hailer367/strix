@@ -1,8 +1,19 @@
 <tools>
   <tool name="web_search">
-    <description>Search the web using Perplexity AI for real-time information and current events.
+    <description>Search the web for security information using multiple providers with automatic fallback.
 
-This is your PRIMARY research tool - use it extensively and liberally for:
+IMPORTANT: This tool supports multiple search providers:
+1. Perplexity AI (best - requires PERPLEXITY_API_KEY)
+2. Tavily AI (good - requires TAVILY_API_KEY)
+3. SerpAPI (Google - requires SERPAPI_API_KEY)
+4. Google Custom Search (requires GOOGLE_CSE_API_KEY + GOOGLE_CSE_ID)
+5. Brave Search (requires BRAVE_API_KEY)
+6. DuckDuckGo (FREE - always available, no API key needed!)
+
+The tool automatically selects the best available provider based on configured API keys.
+If all premium providers fail, it falls back to DuckDuckGo.
+
+Use this tool extensively for:
 - Current vulnerabilities, CVEs, and security advisories
 - Latest attack techniques, exploits, and proof-of-concepts
 - Technology-specific security research and documentation
@@ -11,72 +22,75 @@ This is your PRIMARY research tool - use it extensively and liberally for:
 - Incident response and threat intelligence
 - Compliance frameworks and security standards
 - Bug bounty reports and security research findings
-- Security conference talks and research papers
-
-The tool provides intelligent, contextual responses with current information that may not be in your training data. Use it early and often during security assessments to gather the most up-to-date factual information.</description>
-    <details>This tool leverages Perplexity AI's sonar-reasoning model to search the web and provide intelligent, contextual responses to queries. It's essential for effective cybersecurity work as it provides access to the latest vulnerabilities, attack vectors, security tools, and defensive techniques. The AI understands security context and can synthesize information from multiple sources.</details>
+- Security conference talks and research papers</description>
+    <details>This tool supports multiple search providers with automatic selection and fallback. DuckDuckGo is always available as a free option even without API keys. Premium providers like Perplexity AI offer better results for security research.</details>
     <parameters>
       <parameter name="query" type="string" required="true">
         <description>The search query or question you want to research. Be specific and include relevant technical terms, version numbers, or context for better results. Make it as detailed as possible, with the context of the current security assessment.</description>
       </parameter>
+      <parameter name="provider" type="string" required="false">
+        <description>Optional: Specific search provider to use. Options: perplexity, tavily, serpapi, google_cse, brave, duckduckgo. If not specified, automatically selects the best available provider.</description>
+      </parameter>
     </parameters>
     <returns type="Dict[str, Any]">
-      <description>Response containing: - success: Whether the search was successful - query: The original search query - content: AI-generated response with current information - message: Status message</description>
+      <description>Response containing:
+- success: Whether the search was successful
+- provider: Which search provider was used
+- query: The original search query
+- content: Search results or AI-generated response
+- results: List of search results (when applicable)
+- available_providers: List of all available providers
+- message: Status message</description>
     </returns>
     <examples>
-  # Found specific service version during reconnaissance
+  # Basic search (auto-select best provider)
   <function=web_search>
-  <parameter=query>I found OpenSSH 7.4 running on port 22. Are there any known exploits or privilege escalation techniques for this specific version?</parameter>
+  <parameter=query>OpenSSH 7.4 CVE exploits and privilege escalation techniques</parameter>
   </function>
 
-  # Encountered WAF blocking attempts
+  # Use specific provider
   <function=web_search>
-  <parameter=query>Cloudflare is blocking my SQLmap attempts on this login form. What are the latest bypass techniques for Cloudflare WAF in 2024?</parameter>
+  <parameter=query>WordPress 5.8.3 RCE exploits 2024</parameter>
+  <parameter=provider>perplexity</parameter>
   </function>
 
-  # Need to exploit discovered CMS
+  # Free search with DuckDuckGo
   <function=web_search>
-  <parameter=query>Target is running WordPress 5.8.3 with WooCommerce 6.1.1. What are the current RCE exploits for this combination?</parameter>
+  <parameter=query>Cloudflare WAF bypass techniques SQLi</parameter>
+  <parameter=provider>duckduckgo</parameter>
   </function>
 
-  # Stuck on privilege escalation
+  # OSINT research
   <function=web_search>
-  <parameter=query>I have low-privilege shell on Ubuntu 20.04 with kernel 5.4.0-74-generic. What local privilege escalation exploits work for this exact kernel version?</parameter>
+  <parameter=query>target company "AcmeCorp" data breaches security incidents</parameter>
   </function>
 
-  # Need lateral movement in Active Directory
+  # Tool research
   <function=web_search>
-  <parameter=query>I compromised a domain user account in Windows Server 2019 AD environment. What are the best techniques to escalate to Domain Admin without triggering EDR?</parameter>
+  <parameter=query>best Python JWT security testing library 2024 pip</parameter>
   </function>
+    </examples>
+  </tool>
 
-  # Encountered specific error during exploitation
-  <function=web_search>
-  <parameter=query>Getting "Access denied" when trying to upload webshell to IIS 10.0. What are alternative file upload bypass techniques for Windows IIS?</parameter>
-  </function>
+  <tool name="list_search_providers">
+    <description>List all available web search providers and their configuration status.
 
-  # Need to bypass endpoint protection
-  <function=web_search>
-  <parameter=query>Target has CrowdStrike Falcon running. What are the latest techniques to bypass this EDR for payload execution and persistence?</parameter>
-  </function>
-
-  # Research target's infrastructure for attack surface
-  <function=web_search>
-  <parameter=query>I found target company "AcmeCorp" uses Office 365 and Azure. What are the common misconfigurations and attack vectors for this cloud setup?</parameter>
-  </function>
-
-  # Found interesting subdomain during recon
-  <function=web_search>
-  <parameter=query>Discovered staging.target.com running Jenkins 2.401.3. What are the current authentication bypass and RCE exploits for this Jenkins version?</parameter>
-  </function>
-
-  # Need alternative tools when primary fails
-  <function=web_search>
-  <parameter=query>Nmap is being detected and blocked by the target's IPS. What are stealthy alternatives for port scanning that evade modern intrusion prevention systems?</parameter>
-  </function>
-
-  # Finding best security tools for specific tasks
-  <function=web_search>
-  <parameter=query>What is the best Python pip package in 2025 for JWT security testing and manipulation, including cracking weak secrets and algorithm confusion attacks?</parameter>
+Use this to see which search providers are available based on your configured API keys,
+and get recommendations for the best provider to use.</description>
+    <details>Returns detailed information about each search provider including whether it's available, what API key it needs, quality rating, and cost.</details>
+    <parameters>
+    </parameters>
+    <returns type="Dict[str, Any]">
+      <description>Response containing:
+- available: List of configured and usable providers
+- unavailable: List of providers that need API keys
+- recommended: Best provider to use based on availability
+- total_available: Number of available providers
+- total_unavailable: Number of unavailable providers</description>
+    </returns>
+    <examples>
+  # Check available search providers
+  <function=list_search_providers>
   </function>
     </examples>
   </tool>

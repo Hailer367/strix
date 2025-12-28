@@ -56,8 +56,9 @@ if not SANDBOX_MODE:
     # StrixDB - Permanent GitHub Knowledge Repository
     from .strixdb import *  # noqa: F403
 
-    if HAS_PERPLEXITY_API:
-        from .web_search import *  # noqa: F403
+    # Web Search - Multiple providers with automatic fallback
+    # Always available (DuckDuckGo as free fallback, premium providers if API keys set)
+    from .web_search import *  # noqa: F403
 else:
     if not DISABLE_BROWSER:
         from .browser import *  # noqa: F403
