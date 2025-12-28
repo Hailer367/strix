@@ -35,7 +35,10 @@
 <br>
 
 > [!TIP]
-> **New!** Strix now integrates seamlessly with GitHub Actions and CI/CD pipelines. Automatically scan for vulnerabilities on every pull request and block insecure code before it reaches production!
+> **New!** Strix now supports **Hosted Mode** with a beautiful web dashboard! Deploy your own Strix server on any cloud VM, Codespaces, or Google Colab and access it through your browser.
+
+> [!TIP]
+> Strix also integrates seamlessly with GitHub Actions and CI/CD pipelines. Automatically scan for vulnerabilities on every pull request and block insecure code before it reaches production!
 
 ---
 
@@ -99,6 +102,120 @@ Launch a scan in just a few minutes—no setup or configuration required—and y
 - **Continuous monitoring** so new vulnerabilities are caught quickly
 
 [**Run your first pentest now →**](https://usestrix.com)
+
+---
+
+## 🌐 Self-Hosted Mode (NEW!)
+
+Deploy Strix with a web-based dashboard on your own infrastructure - perfect for Google Colab, GitHub Codespaces, cloud VMs, or local servers.
+
+### Quick Start - Hosted Mode
+
+```bash
+# Clone the repository
+git clone https://github.com/usestrix/strix.git
+cd strix
+
+# Install with server dependencies
+pip install -e ".[server]"
+
+# Build the web dashboard (requires Node.js)
+cd web-dashboard && npm install && npm run build && cd ..
+
+# Configure your AI provider
+export STRIX_LLM="openai/gpt-4"
+export LLM_API_KEY="your-api-key"
+
+# Start the server
+strix-server --port 8000
+```
+
+Access the dashboard at `http://localhost:8000` or your VM's public IP.
+
+### 🎮 Dashboard Features
+
+The Strix Dashboard is designed like a plane's cockpit - giving you complete control over your security testing:
+
+- **Real-time Agent Monitoring** - Watch AI agents work in real-time with live updates
+- **Agent Tree View** - Visualize the hierarchy of agents and their tasks
+- **Vulnerability Panel** - Track discovered vulnerabilities with severity ratings
+- **Interactive Chat** - Send messages to agents and guide their testing
+- **Scan Controls** - Start, stop, and configure scans from the UI
+- **Multi-target Support** - Test multiple targets simultaneously
+- **Live Statistics** - Monitor iterations, duration, and agent progress
+
+### Deploy on Cloud Platforms
+
+#### Google Colab
+
+```python
+# In a Colab notebook
+!pip install strix-agent[server]
+!git clone https://github.com/usestrix/strix.git
+%cd strix/web-dashboard
+!npm install && npm run build
+%cd ..
+
+import os
+os.environ["STRIX_LLM"] = "openai/gpt-4"
+os.environ["LLM_API_KEY"] = "your-key"
+
+# Start server with ngrok for public URL
+!pip install pyngrok
+from pyngrok import ngrok
+public_url = ngrok.connect(8000)
+print(f"Dashboard URL: {public_url}")
+
+!strix-server --port 8000
+```
+
+#### GitHub Codespaces
+
+```bash
+# In terminal
+pip install -e ".[server]"
+cd web-dashboard && npm install && npm run build && cd ..
+export STRIX_LLM="openai/gpt-4"
+export LLM_API_KEY="your-key"
+strix-server --port 8000
+# Access via Codespaces port forwarding
+```
+
+#### Docker Deployment
+
+```bash
+# Coming soon - Docker image with pre-built dashboard
+docker run -p 8000:8000 \
+  -e STRIX_LLM="openai/gpt-4" \
+  -e LLM_API_KEY="your-key" \
+  usestrix/strix-dashboard
+```
+
+### Server CLI Options
+
+```bash
+strix-server --help
+
+Options:
+  --host TEXT        Host to bind (default: 0.0.0.0)
+  --port INTEGER     Port number (default: 8000)
+  --dev              Development mode with auto-reload
+  --workers INTEGER  Number of worker processes
+  --build-dashboard  Build dashboard before starting
+```
+
+### API Endpoints
+
+The server exposes REST and WebSocket APIs:
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/health` | GET | Health check |
+| `/api/scan/start` | POST | Start a new scan |
+| `/api/scan/{id}/stop` | POST | Stop a running scan |
+| `/api/agents` | GET | List all agents |
+| `/api/vulnerabilities` | GET | List vulnerabilities |
+| `/ws` | WebSocket | Real-time updates |
 
 ---
 
