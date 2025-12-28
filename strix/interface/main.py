@@ -40,7 +40,75 @@ logging.getLogger().setLevel(logging.ERROR)
 
 
 def validate_environment() -> None:  # noqa: PLR0912, PLR0915
+    """Validate configuration from config.json or environment variables."""
     console = Console()
+    
+    # First, try to load from config.json (preferred method)
+    try:
+        from strix.config import get_config, load_config
+        config = load_config()
+        
+        errors = config.validate()
+        if not errors:
+            # Config is valid, show success message
+            console.print(
+                f"[green]✓[/green] Configuration loaded: "
+                f"endpoint={config.api_endpoint[:50]}... model={config.model}"
+            )
+            return
+        
+        # Config has errors, show helpful message
+        error_text = Text()
+        error_text.append("❌ ", style="bold red")
+        error_text.append("CONFIGURATION ERROR", style="bold red")
+        error_text.append("\n\n", style="white")
+        
+        error_text.append("Your config.json has the following issues:\n\n", style="white")
+        for error in errors:
+            error_text.append("• ", style="bold yellow")
+            error_text.append(f"{error}\n", style="white")
+        
+        error_text.append("\n", style="white")
+        error_text.append("📝 ", style="bold cyan")
+        error_text.append("How to configure Strix:\n\n", style="bold cyan")
+        
+        error_text.append("1. Run CLIProxyAPI:\n", style="white")
+        error_text.append("   cliproxy run --port 8317\n\n", style="dim white")
+        
+        error_text.append("2. Create/edit config.json in your project directory:\n", style="white")
+        error_text.append('''   {
+     "api": {
+       "endpoint": "http://localhost:8317/v1",
+       "model": "gemini-2.5-pro"
+     },
+     "timeframe": {
+       "duration_minutes": 60,
+       "warning_minutes": 5
+     }
+   }
+''', style="dim white")
+        
+        error_text.append("\n3. Run Strix:\n", style="white")
+        error_text.append("   strix --target ./your-app\n", style="dim white")
+        
+        panel = Panel(
+            error_text,
+            title="[bold red]🛡️  STRIX CONFIGURATION ERROR",
+            title_align="center",
+            border_style="red",
+            padding=(1, 2),
+        )
+        
+        console.print("\n")
+        console.print(panel)
+        console.print()
+        sys.exit(1)
+        
+    except ImportError:
+        # Fall back to environment variable validation
+        pass
+    
+    # Legacy: Environment variable validation
     missing_required_vars = []
     missing_optional_vars = []
 
@@ -68,80 +136,34 @@ def validate_environment() -> None:  # noqa: PLR0912, PLR0915
     if missing_required_vars:
         error_text = Text()
         error_text.append("❌ ", style="bold red")
-        error_text.append("MISSING REQUIRED ENVIRONMENT VARIABLES", style="bold red")
+        error_text.append("CONFIGURATION REQUIRED", style="bold red")
         error_text.append("\n\n", style="white")
-
-        for var in missing_required_vars:
-            error_text.append(f"• {var}", style="bold yellow")
-            error_text.append(" is not set\n", style="white")
-
-        if missing_optional_vars:
-            error_text.append("\nOptional environment variables:\n", style="dim white")
-            for var in missing_optional_vars:
-                error_text.append(f"• {var}", style="dim yellow")
-                error_text.append(" is not set\n", style="dim white")
-
-        error_text.append("\nRequired environment variables:\n", style="white")
-        for var in missing_required_vars:
-            if var == "STRIX_LLM":
-                error_text.append("• ", style="white")
-                error_text.append("STRIX_LLM", style="bold cyan")
-                error_text.append(
-                    " - Model name to use with litellm (e.g., 'openai/gpt-5')\n",
-                    style="white",
-                )
-
-        if missing_optional_vars:
-            error_text.append("\nOptional environment variables:\n", style="white")
-            for var in missing_optional_vars:
-                if var == "LLM_API_KEY":
-                    error_text.append("• ", style="white")
-                    error_text.append("LLM_API_KEY", style="bold cyan")
-                    error_text.append(
-                        " - API key for the LLM provider "
-                        "(not needed for local models, Vertex AI, AWS, etc.)\n",
-                        style="white",
-                    )
-                elif var == "LLM_API_BASE":
-                    error_text.append("• ", style="white")
-                    error_text.append("LLM_API_BASE", style="bold cyan")
-                    error_text.append(
-                        " - Custom API base URL if using local models (e.g., Ollama, LMStudio)\n",
-                        style="white",
-                    )
-                elif var == "PERPLEXITY_API_KEY":
-                    error_text.append("• ", style="white")
-                    error_text.append("PERPLEXITY_API_KEY", style="bold cyan")
-                    error_text.append(
-                        " - API key for Perplexity AI web search (enables real-time research)\n",
-                        style="white",
-                    )
-
-        error_text.append("\nExample setup:\n", style="white")
-        error_text.append("export STRIX_LLM='openai/gpt-5'\n", style="dim white")
-
-        if missing_optional_vars:
-            for var in missing_optional_vars:
-                if var == "LLM_API_KEY":
-                    error_text.append(
-                        "export LLM_API_KEY='your-api-key-here'  "
-                        "# not needed for local models, Vertex AI, AWS, etc.\n",
-                        style="dim white",
-                    )
-                elif var == "LLM_API_BASE":
-                    error_text.append(
-                        "export LLM_API_BASE='http://localhost:11434'  "
-                        "# needed for local models only\n",
-                        style="dim white",
-                    )
-                elif var == "PERPLEXITY_API_KEY":
-                    error_text.append(
-                        "export PERPLEXITY_API_KEY='your-perplexity-key-here'\n", style="dim white"
-                    )
+        
+        error_text.append("Strix requires either a config.json file or environment variables.\n\n", 
+                         style="white")
+        
+        error_text.append("📝 ", style="bold cyan")
+        error_text.append("Recommended: Use config.json\n\n", style="bold cyan")
+        
+        error_text.append("1. Run CLIProxyAPI to get your API endpoint:\n", style="white")
+        error_text.append("   cliproxy run --port 8317\n\n", style="dim white")
+        
+        error_text.append("2. Create config.json:\n", style="white")
+        error_text.append('''   {
+     "api": {
+       "endpoint": "http://localhost:8317/v1",
+       "model": "gemini-2.5-pro"
+     }
+   }
+''', style="dim white")
+        
+        error_text.append("\n💡 Alternative: Environment variables\n", style="bold yellow")
+        error_text.append("export STRIX_LLM='gemini-2.5-pro'\n", style="dim white")
+        error_text.append("export LLM_API_BASE='http://localhost:8317/v1'\n", style="dim white")
 
         panel = Panel(
             error_text,
-            title="[bold red]🛡️  STRIX CONFIGURATION ERROR",
+            title="[bold red]🛡️  STRIX CONFIGURATION REQUIRED",
             title_align="center",
             border_style="red",
             padding=(1, 2),

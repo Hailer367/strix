@@ -149,9 +149,32 @@ class BaseAgent(metaclass=AgentMeta):
         if self._current_task and not self._current_task.done():
             self._current_task.cancel()
             self._current_task = None
+    
+    def _initialize_session_timer(self) -> None:
+        """Initialize the session timer from config.json settings."""
+        try:
+            from strix.config import get_config
+            config = get_config()
+            
+            # Only initialize timer for root agents
+            if self.state.parent_id is None:
+                self.state.start_session_timer(
+                    duration_minutes=config.timeframe.duration_minutes,
+                    warning_minutes=config.timeframe.warning_minutes,
+                )
+                logger.info(
+                    f"Session timer initialized: {config.timeframe.duration_minutes}m duration, "
+                    f"{config.timeframe.warning_minutes}m warning threshold"
+                )
+        except (ImportError, Exception) as e:
+            # Config not available, use defaults
+            logger.debug(f"Could not load timeframe config: {e}")
 
     async def agent_loop(self, task: str) -> dict[str, Any]:  # noqa: PLR0912, PLR0915
         await self._initialize_sandbox_and_state(task)
+        
+        # Initialize session timer from config if available
+        self._initialize_session_timer()
 
         from strix.telemetry.tracer import get_global_tracer
 
@@ -159,6 +182,22 @@ class BaseAgent(metaclass=AgentMeta):
 
         while True:
             self._check_agent_messages(self.state)
+            
+            # Check for time-based warnings
+            time_warning = self.state.get_time_warning_message()
+            if time_warning:
+                self.state.add_message("user", time_warning)
+                logger.info(f"Time warning sent to agent: {time_warning[:100]}...")
+            
+            # Check if session time has expired
+            if self.state.is_session_expired() and self.state.session_start_time is not None:
+                if self.non_interactive:
+                    logger.warning("Session time expired, forcing completion")
+                    self.state.set_completed({"success": True, "reason": "time_expired"})
+                    if tracer:
+                        tracer.update_agent_status(self.state.agent_id, "completed")
+                    return self.state.final_result or {}
+                # In interactive mode, just warn but don't force stop
 
             if self.state.is_waiting_for_input():
                 await self._wait_for_input()

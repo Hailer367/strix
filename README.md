@@ -288,21 +288,37 @@ pipx install strix-agent
 strix --target ./app-directory
 ```
 
-### 🔌 CLIProxyAPI Integration (Recommended)
+### 📝 Configuration via config.json (Recommended)
 
-Strix now features **built-in CLIProxyAPI support** - a unified API gateway that lets you use your existing Google, Claude, and OpenAI subscriptions without needing separate API keys!
+Strix uses a **config.json** file for configuration. This provides CLIProxyAPI integration and configurable timeframes.
 
+**Step 1: Run CLIProxyAPI**
 ```bash
-# Install CLIProxyAPI (one-time setup)
 # Download from https://github.com/router-for-me/CLIProxyAPI/releases
-
-# Start CLIProxyAPI
 cliproxy run --port 8317
+```
 
-# Login with your accounts (opens browser for OAuth)
-# Navigate to http://localhost:8317 or use the CLI
+**Step 2: Create config.json**
+```json
+{
+  "api": {
+    "endpoint": "http://localhost:8317/v1",
+    "model": "gemini-2.5-pro"
+  },
+  "timeframe": {
+    "duration_minutes": 60,
+    "warning_minutes": 5,
+    "time_awareness_enabled": true
+  },
+  "dashboard": {
+    "enabled": true,
+    "show_time_remaining": true
+  }
+}
+```
 
-# Run Strix - it auto-detects CLIProxyAPI!
+**Step 3: Run Strix**
+```bash
 strix --target ./app-directory
 ```
 
@@ -310,22 +326,29 @@ strix --target ./app-directory
 - 🔑 **No API Keys Needed** - Use your existing subscriptions via OAuth
 - ⚖️ **Automatic Load Balancing** - Distributes requests across accounts
 - 🔄 **Failover Support** - Auto-switches when quotas are exceeded
-- 📊 **Usage Tracking** - Monitor usage across all providers
-- 🌐 **Unified API** - Access Gemini, Claude, GPT, and more through one endpoint
+- 📊 **Real-time Dashboard** - Monitor agent activity and time remaining
+- ⏱️ **Configurable Timeframes** - Set duration from 10 minutes to 12 hours
 
-### Traditional API Key Setup
+### ⏱️ Timeframe Configuration (NEW!)
 
-If you prefer direct API access:
+Configure session duration from **10 minutes to 12 hours**:
+
+| Duration | Use Case |
+|----------|----------|
+| 10-15 min | Quick CI checks |
+| 30-60 min | Standard scans |
+| 2-4 hours | Deep audits |
+| 8-12 hours | Extended pentests |
+
+The AI automatically receives time warnings to finish up before the session ends.
+
+### Legacy: Environment Variables
+
+If you prefer environment variables:
 
 ```bash
-# Configure your AI provider
 export STRIX_LLM="openai/gpt-5"
-export LLM_API_KEY="your-api-key"
-
-# Disable CLIProxyAPI mode
-export CLIPROXY_ENABLED="false"
-
-# Run Strix
+export LLM_API_BASE="http://localhost:8317/v1"
 strix --target ./app-directory
 ```
 

@@ -29,34 +29,68 @@ litellm.drop_params = True
 litellm.modify_params = True
 
 def _get_api_key() -> str | None:
-    """Get API key, returning None for CLIProxyAPI mode."""
-    cliproxy_enabled = os.getenv("CLIPROXY_ENABLED", "true").lower() == "true"
-    if cliproxy_enabled:
-        # CLIProxyAPI doesn't require an API key - uses OAuth tokens
-        return os.getenv("LLM_API_KEY") or "cliproxy-no-key-required"
-    return os.getenv("LLM_API_KEY")
+    """Get API key from config.json or environment.
+    
+    Priority:
+    1. config.json api.api_key
+    2. LLM_API_KEY environment variable
+    3. Default placeholder for CLIProxyAPI OAuth mode
+    """
+    try:
+        from strix.config import get_config
+        config = get_config()
+        if config.api_key:
+            return config.api_key
+    except (ImportError, Exception):
+        pass
+    
+    # Fall back to environment variable
+    api_key = os.getenv("LLM_API_KEY")
+    if api_key:
+        return api_key
+    
+    # CLIProxyAPI OAuth mode doesn't require an API key
+    return "cliproxy-oauth-mode"
+
 
 def _get_api_base() -> str | None:
-    """Get API base URL, defaulting to CLIProxyAPI if enabled."""
-    # Check for explicit base URL first
-    explicit_base = (
+    """Get API base URL from config.json or environment.
+    
+    Priority:
+    1. config.json api.endpoint (CLIProxyAPI endpoint)
+    2. LLM_API_BASE / OPENAI_API_BASE / LITELLM_BASE_URL environment variables
+    """
+    try:
+        from strix.config import get_config
+        config = get_config()
+        if config.api_endpoint:
+            return config.api_endpoint
+    except (ImportError, Exception):
+        pass
+    
+    # Fall back to environment variables
+    return (
         os.getenv("LLM_API_BASE")
         or os.getenv("OPENAI_API_BASE")
         or os.getenv("LITELLM_BASE_URL")
         or os.getenv("OLLAMA_API_BASE")
     )
-    if explicit_base:
-        return explicit_base
-    
-    # Default to CLIProxyAPI if enabled
-    cliproxy_enabled = os.getenv("CLIPROXY_ENABLED", "true").lower() == "true"
-    if cliproxy_enabled:
-        return os.getenv("CLIPROXY_BASE_URL", "http://localhost:8317/v1")
-    
-    return None
 
-_LLM_API_KEY = _get_api_key()
-_LLM_API_BASE = _get_api_base()
+
+# Lazy initialization - will be set on first use
+_LLM_API_KEY: str | None = None
+_LLM_API_BASE: str | None = None
+_CREDENTIALS_INITIALIZED = False
+
+
+def _ensure_credentials() -> tuple[str | None, str | None]:
+    """Ensure credentials are initialized and return them."""
+    global _LLM_API_KEY, _LLM_API_BASE, _CREDENTIALS_INITIALIZED
+    if not _CREDENTIALS_INITIALIZED:
+        _LLM_API_KEY = _get_api_key()
+        _LLM_API_BASE = _get_api_base()
+        _CREDENTIALS_INITIALIZED = True
+    return _LLM_API_KEY, _LLM_API_BASE
 
 
 class LLMRequestFailedError(Exception):
@@ -471,10 +505,13 @@ class LLM:
             "timeout": self.config.timeout,
         }
 
-        if _LLM_API_KEY:
-            completion_args["api_key"] = _LLM_API_KEY
-        if _LLM_API_BASE:
-            completion_args["api_base"] = _LLM_API_BASE
+        # Get credentials (lazily initialized from config.json or environment)
+        api_key, api_base = _ensure_credentials()
+        
+        if api_key:
+            completion_args["api_key"] = api_key
+        if api_base:
+            completion_args["api_base"] = api_base
 
         if self._should_include_stop_param():
             completion_args["stop"] = ["</function>"]

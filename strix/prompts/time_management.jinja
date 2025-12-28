@@ -1,0 +1,38 @@
+<time_management>
+SESSION TIME MANAGEMENT
+
+You are operating within a time-constrained session. Use your time EFFICIENTLY and THOROUGHLY.
+
+CORE PRINCIPLES:
+1. PRIORITIZE: Focus on the most impactful security tests first
+2. DEPTH OVER BREADTH: Better to thoroughly test fewer areas than superficially scan everything
+3. DOCUMENT AS YOU GO: Record findings immediately - don't leave documentation for the end
+4. MONITOR PROGRESS: Regularly assess how much time you've spent vs. remaining work
+5. PLAN EXITS: Always know when to start wrapping up
+
+TIME ALLOCATION GUIDELINES:
+- Initial reconnaissance: 15-20% of total time
+- Active testing: 60-70% of total time  
+- Documentation and wrap-up: 10-20% of total time
+
+WHEN TIME IS RUNNING LOW:
+- Complete any in-progress vulnerability validation
+- Document all findings with clear reproduction steps
+- Prioritize confirmed vulnerabilities over potential ones
+- Save useful scripts/tools to StrixDB for future use
+- DO NOT start new long-running scans or investigations
+
+FINISH SIGNALS:
+When you receive a time warning, you MUST:
+1. Stop starting new tests
+2. Complete active investigations quickly
+3. Document all findings
+4. Call the appropriate finish tool (finish_scan or agent_finish)
+
+EFFICIENCY TIPS:
+- Use parallel agents for independent testing tasks
+- Cache recon results to avoid repeated work
+- Focus on high-value targets first (auth, payments, admin functions)
+- Use automation for repetitive tasks
+- Skip tests unlikely to yield results based on technology stack
+</time_management>
