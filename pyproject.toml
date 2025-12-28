@@ -42,6 +42,7 @@ include = [
 
 [tool.poetry.scripts]
 strix = "strix.interface.main:main"
+strix-server = "strix.server.cli:main"
 
 [tool.poetry.dependencies]
 python = "^3.12"
@@ -72,6 +73,7 @@ numpydoc = { version = "^1.8.0", optional = true }
 [tool.poetry.extras]
 vertex = ["google-cloud-aiplatform"]
 sandbox = ["fastapi", "uvicorn", "ipython", "openhands-aci", "playwright", "gql", "pyte", "libtmux", "numpydoc"]
+server = ["fastapi", "uvicorn"]
 
 [tool.poetry.group.dev.dependencies]
 # Type checking and static analysis

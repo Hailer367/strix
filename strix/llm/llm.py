@@ -28,13 +28,35 @@ logger = logging.getLogger(__name__)
 litellm.drop_params = True
 litellm.modify_params = True
 
-_LLM_API_KEY = os.getenv("LLM_API_KEY")
-_LLM_API_BASE = (
-    os.getenv("LLM_API_BASE")
-    or os.getenv("OPENAI_API_BASE")
-    or os.getenv("LITELLM_BASE_URL")
-    or os.getenv("OLLAMA_API_BASE")
-)
+def _get_api_key() -> str | None:
+    """Get API key, returning None for CLIProxyAPI mode."""
+    cliproxy_enabled = os.getenv("CLIPROXY_ENABLED", "true").lower() == "true"
+    if cliproxy_enabled:
+        # CLIProxyAPI doesn't require an API key - uses OAuth tokens
+        return os.getenv("LLM_API_KEY") or "cliproxy-no-key-required"
+    return os.getenv("LLM_API_KEY")
+
+def _get_api_base() -> str | None:
+    """Get API base URL, defaulting to CLIProxyAPI if enabled."""
+    # Check for explicit base URL first
+    explicit_base = (
+        os.getenv("LLM_API_BASE")
+        or os.getenv("OPENAI_API_BASE")
+        or os.getenv("LITELLM_BASE_URL")
+        or os.getenv("OLLAMA_API_BASE")
+    )
+    if explicit_base:
+        return explicit_base
+    
+    # Default to CLIProxyAPI if enabled
+    cliproxy_enabled = os.getenv("CLIPROXY_ENABLED", "true").lower() == "true"
+    if cliproxy_enabled:
+        return os.getenv("CLIPROXY_BASE_URL", "http://localhost:8317/v1")
+    
+    return None
+
+_LLM_API_KEY = _get_api_key()
+_LLM_API_BASE = _get_api_base()
 
 
 class LLMRequestFailedError(Exception):
