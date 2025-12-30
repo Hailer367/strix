@@ -77,6 +77,7 @@ class ResourceUsage:
     cached_tokens: int = 0
     total_cost: float = 0.0
     request_count: int = 0
+    api_calls: int = 0  # NEW: Live API call counter
     
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
@@ -86,6 +87,41 @@ class ResourceUsage:
             "cached_tokens": self.cached_tokens,
             "total_cost": round(self.total_cost, 4),
             "request_count": self.request_count,
+            "api_calls": self.api_calls,
+        }
+
+
+@dataclass
+class VulnerabilityEntry:
+    """Represents a discovered vulnerability for dashboard display."""
+    
+    title: str
+    severity: str  # "critical", "high", "medium", "low", "info"
+    target: str
+    vuln_type: str
+    timestamp: datetime
+    validated: bool = False
+    
+    def get_severity_icon(self) -> str:
+        """Get severity icon."""
+        icons = {
+            "critical": "🔴",
+            "high": "🟠",
+            "medium": "🟡",
+            "low": "🟢",
+            "info": "🔵",
+        }
+        return icons.get(self.severity.lower(), "⚪")
+    
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "title": self.title,
+            "severity": self.severity,
+            "target": self.target,
+            "vuln_type": self.vuln_type,
+            "timestamp": self.timestamp.isoformat(),
+            "validated": self.validated,
         }
 
 
@@ -140,8 +176,10 @@ class Dashboard:
     agents: dict[str, AgentStatus] = field(default_factory=dict)
     resources: ResourceUsage = field(default_factory=ResourceUsage)
     vulnerabilities_found: int = 0
+    vulnerabilities: list[VulnerabilityEntry] = field(default_factory=list)  # NEW: Live vuln list
     tool_log: list[dict[str, Any]] = field(default_factory=list)
     max_tool_log_size: int = 10
+    max_vulnerabilities_display: int = 10  # NEW: Max vulns to show in dashboard
     
     # Console
     console: Console = field(default_factory=Console)
@@ -206,6 +244,36 @@ class Dashboard:
         if len(self.tool_log) > self.max_tool_log_size:
             self.tool_log = self.tool_log[-self.max_tool_log_size:]
     
+    def increment_api_calls(self, count: int = 1) -> None:
+        """Increment the API call counter."""
+        self.resources.api_calls += count
+    
+    def add_vulnerability(
+        self,
+        title: str,
+        severity: str,
+        target: str,
+        vuln_type: str,
+        validated: bool = False,
+    ) -> None:
+        """Add a discovered vulnerability to the dashboard."""
+        vuln = VulnerabilityEntry(
+            title=title,
+            severity=severity,
+            target=target,
+            vuln_type=vuln_type,
+            timestamp=datetime.now(),
+            validated=validated,
+        )
+        self.vulnerabilities.append(vuln)
+        self.vulnerabilities_found = len(self.vulnerabilities)
+        
+        # Sort by severity (critical first)
+        severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+        self.vulnerabilities.sort(
+            key=lambda v: (severity_order.get(v.severity.lower(), 5), -v.timestamp.timestamp())
+        )
+    
     def check_time_warning(self) -> str | None:
         """Check for time warnings and return message if any."""
         return self.time_tracker.check_and_get_warning()
@@ -269,8 +337,13 @@ class Dashboard:
         )
     
     def render_resources_widget(self) -> Panel:
-        """Render the resource usage widget."""
+        """Render the resource usage widget with live API call counter."""
         content = Text()
+        
+        # API Calls counter (prominent display)
+        content.append("🔄 API Calls: ", style="bold cyan")
+        content.append(f"{self.resources.api_calls:,}", style="bold green")
+        content.append("\n\n")
         
         content.append("Tokens: ", style="dim")
         content.append(f"{self.resources.input_tokens:,}", style="green")
@@ -289,25 +362,53 @@ class Dashboard:
         
         return Panel(
             content,
-            title="[bold]📊 Resources[/bold]",
+            title="[bold]📊 Resources & API Calls[/bold]",
             border_style="blue",
             padding=(0, 1),
         )
     
     def render_findings_widget(self) -> Panel:
-        """Render the findings summary widget."""
+        """Render the findings summary widget with live vulnerability disclosure."""
         content = Text()
         
         if self.vulnerabilities_found > 0:
             content.append("🔴 ", style="red")
-            content.append(f"{self.vulnerabilities_found} vulnerabilities found", style="bold red")
+            content.append(f"{self.vulnerabilities_found} vulnerabilities found\n", style="bold red")
+            
+            # Show vulnerability breakdown by severity
+            severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+            for vuln in self.vulnerabilities:
+                sev = vuln.severity.lower()
+                if sev in severity_counts:
+                    severity_counts[sev] += 1
+            
+            content.append("\n")
+            if severity_counts["critical"] > 0:
+                content.append(f"  🔴 Critical: {severity_counts['critical']}\n", style="red bold")
+            if severity_counts["high"] > 0:
+                content.append(f"  🟠 High: {severity_counts['high']}\n", style="dark_orange")
+            if severity_counts["medium"] > 0:
+                content.append(f"  🟡 Medium: {severity_counts['medium']}\n", style="yellow")
+            if severity_counts["low"] > 0:
+                content.append(f"  🟢 Low: {severity_counts['low']}\n", style="green")
+            if severity_counts["info"] > 0:
+                content.append(f"  🔵 Info: {severity_counts['info']}\n", style="blue")
+            
+            # Show recent vulnerabilities (last 5)
+            content.append("\n📋 Recent Findings:\n", style="bold")
+            for vuln in self.vulnerabilities[:5]:
+                icon = vuln.get_severity_icon()
+                validated_mark = "✓" if vuln.validated else "○"
+                content.append(f"  {icon} {validated_mark} ", style="dim")
+                content.append(f"{vuln.title[:40]}", style="white")
+                content.append(f" [{vuln.vuln_type}]\n", style="dim cyan")
         else:
             content.append("🟢 ", style="green")
             content.append("No vulnerabilities found yet", style="dim")
         
         return Panel(
             content,
-            title="[bold]🐞 Findings[/bold]",
+            title="[bold]🐞 Vulnerabilities (Live)[/bold]",
             border_style="red" if self.vulnerabilities_found > 0 else "green",
             padding=(0, 1),
         )
@@ -361,7 +462,9 @@ class Dashboard:
             "agents": {aid: a.to_dict() for aid, a in self.agents.items()},
             "resources": self.resources.to_dict(),
             "vulnerabilities_found": self.vulnerabilities_found,
+            "vulnerabilities": [v.to_dict() for v in self.vulnerabilities],
             "tool_count": len(self.tool_log),
+            "api_calls": self.resources.api_calls,
         }
     
     @classmethod

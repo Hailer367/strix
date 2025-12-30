@@ -4,16 +4,29 @@ from typing import Any
 
 
 def _truncate_to_first_function(content: str) -> str:
+    """Legacy function - kept for compatibility but now allows multiple functions.
+    
+    The multi-action system now supports up to 7 function calls per response
+    for efficiency. This function no longer truncates to first function.
+    """
     if not content:
         return content
 
+    # Check if multi-action mode is enabled (up to 7 actions per call)
+    # Count function calls
     function_starts = [match.start() for match in re.finditer(r"<function=", content)]
-
-    if len(function_starts) >= 2:
-        second_function_start = function_starts[1]
-
-        return content[:second_function_start].rstrip()
-
+    
+    # Allow up to 7 function calls for multi-action efficiency
+    MAX_ACTIONS_PER_CALL = 7
+    
+    if len(function_starts) > MAX_ACTIONS_PER_CALL:
+        # Find the end of the 7th function call
+        pattern = r"<function=([^>]+)>.*?</function>"
+        matches = list(re.finditer(pattern, content, re.DOTALL))
+        if len(matches) >= MAX_ACTIONS_PER_CALL:
+            truncate_point = matches[MAX_ACTIONS_PER_CALL - 1].end()
+            return content[:truncate_point].rstrip()
+    
     return content
 
 

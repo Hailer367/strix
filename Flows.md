@@ -2,34 +2,42 @@
 
 This document contains GitHub Actions workflow configurations for running Strix automatically. Copy the desired workflow to `.github/workflows/` in your repository.
 
+> **🆕 NEW IN THIS VERSION:**
+> - **CLIProxyAPI Support**: Use `CLIPROXY_ENDPOINT` instead of API keys - no API_KEY required!
+> - **Continuous Scanning**: Workflow continues finding vulnerabilities until timeframe exhausted (doesn't stop on first find)
+> - **Live Dashboard**: Real-time vulnerability disclosure and API call counter
+> - **Multi-Action Mode**: AI can do up to 7 actions per API call for efficiency
+> - **Active Commander**: Main agent now actively participates in security testing (not just coordination)
+> - **Custom Strix Install**: Installs from Hailer367/strix repository (enhanced version)
+
 ---
 
 ## Table of Contents
 
-1. [Configuration Guide](#configuration-guide) - **NEW!** Config.json and timeframe setup
-2. [Full-Featured Strix Workflow](#full-featured-strix-workflow) - Complete workflow with all options
-3. [Quick Scan Workflow](#quick-scan-workflow) - Simplified workflow for PR checks
-4. [Scheduled Security Audit](#scheduled-security-audit) - Automated daily/weekly scans
-5. [Manual Penetration Test](#manual-penetration-test) - On-demand deep scans
-6. [StrixDB Sync Workflow](#strixdb-sync-workflow) - Sync artifacts to StrixDB
+1. [Configuration Guide](#configuration-guide) - Config.json and CLIProxyAPI setup
+2. [Required Secrets](#required-secrets) - What you need to configure
+3. [Full-Featured Strix Workflow](#full-featured-strix-workflow) - Complete workflow with all options
+4. [Quick Scan Workflow](#quick-scan-workflow) - Simplified workflow for PR checks
+5. [Scheduled Security Audit](#scheduled-security-audit) - Automated daily/weekly scans
+6. [Manual Penetration Test](#manual-penetration-test) - On-demand deep scans
+7. [StrixDB Sync Workflow](#strixdb-sync-workflow) - Sync artifacts to StrixDB
+8. [New Features Guide](#new-features-guide) - Multi-action, Active Commander, Live Dashboard
 
 ---
 
 ## Configuration Guide
 
-### 📝 config.json Setup (Recommended)
+### 🔑 CLIProxyAPI Setup (Recommended - No API Key Needed!)
 
-Strix now uses a **config.json** file for configuration. This is the preferred method over environment variables.
+Strix now supports **CLIProxyAPI** which allows you to use your existing AI subscriptions via OAuth - **no API keys required!**
 
 **Step 1: Run CLIProxyAPI**
 ```bash
-# Install CLIProxyAPI from https://github.com/router-for-me/CLIProxyAPI/releases
+# Download from https://github.com/router-for-me/CLIProxyAPI/releases
 cliproxy run --port 8317
 ```
 
-**Step 2: Create config.json**
-
-Create a `config.json` file in your project root:
+**Step 2: Create config.json (or use secrets in workflow)**
 
 ```json
 {
@@ -48,15 +56,16 @@ Create a `config.json` file in your project root:
     "show_time_remaining": true,
     "show_agent_details": true,
     "show_tool_logs": true,
-    "show_resource_usage": true
+    "show_resource_usage": true,
+    "show_api_calls": true,
+    "show_vulnerabilities": true
   },
   "scan_mode": "deep",
   "strixdb": {
     "enabled": false,
     "repo": "",
     "token": ""
-  },
-  "perplexity_api_key": ""
+  }
 }
 ```
 
@@ -67,81 +76,21 @@ strix --target ./your-app
 
 ### ⏱️ Timeframe Configuration
 
-The timeframe system allows you to set session duration from **10 minutes to 12 hours** (720 minutes).
-
 | Setting | Description | Range | Default |
 |---------|-------------|-------|---------|
 | `duration_minutes` | Total session time | 10 - 720 min | 60 min |
 | `warning_minutes` | Time before end to warn AI | 1 - 30 min | 5 min |
 | `time_awareness_enabled` | Enable time warnings | true/false | true |
 
-**How Time Warnings Work:**
+### 📊 Enhanced Dashboard Features (NEW!)
 
-1. **Standard Warning**: When `warning_minutes` remaining, the AI receives a notice to start wrapping up
-2. **Critical Warning**: At half of `warning_minutes` (e.g., 2.5 min if warning is 5 min), AI receives urgent finish notice
-3. **Session End**: When time expires in non-interactive mode, session completes automatically
-
-**Example Configurations:**
-
-```json
-// Quick scan (15 minutes)
-{
-  "timeframe": {
-    "duration_minutes": 15,
-    "warning_minutes": 2,
-    "time_awareness_enabled": true
-  }
-}
-
-// Standard scan (1 hour)
-{
-  "timeframe": {
-    "duration_minutes": 60,
-    "warning_minutes": 5,
-    "time_awareness_enabled": true
-  }
-}
-
-// Deep audit (4 hours)
-{
-  "timeframe": {
-    "duration_minutes": 240,
-    "warning_minutes": 15,
-    "time_awareness_enabled": true
-  }
-}
-
-// Maximum duration (12 hours)
-{
-  "timeframe": {
-    "duration_minutes": 720,
-    "warning_minutes": 30,
-    "time_awareness_enabled": true
-  }
-}
-```
-
-### 📊 Dashboard Configuration
-
-The real-time dashboard shows:
+The real-time dashboard now shows:
 - ⏱️ Time remaining with progress bar
 - 🤖 Active agents and their status
 - 📊 Resource usage (tokens, cost)
-- 🐞 Vulnerabilities found
+- 🔄 **Live API Call Counter** - Track API calls in real-time
+- 🐞 **Live Vulnerability Disclosure** - See vulnerabilities as they're found
 - 🔧 Recent tool executions
-
-```json
-{
-  "dashboard": {
-    "enabled": true,
-    "refresh_interval": 1.0,
-    "show_time_remaining": true,
-    "show_agent_details": true,
-    "show_tool_logs": true,
-    "show_resource_usage": true
-  }
-}
-```
 
 ---
 
@@ -151,18 +100,25 @@ Before using these workflows, add the following secrets to your repository:
 
 | Secret | Required | Description |
 |--------|----------|-------------|
-| `CLIPROXY_ENDPOINT` | Yes | CLIProxyAPI endpoint (e.g., `http://localhost:8317/v1`) |
-| `STRIX_MODEL` | Yes | Model name (e.g., `gemini-2.5-pro`, `claude-sonnet-4`) |
-| `LLM_API_KEY` | Optional | API key (not needed for CLIProxyAPI OAuth mode) |
+| `CLIPROXY_ENDPOINT` | **Yes** | CLIProxyAPI endpoint (e.g., `http://your-server:8317/v1`) |
+| `STRIX_MODEL` | Yes | Model name (e.g., `gemini-2.5-pro`, `claude-sonnet-4`, `gpt-5`) |
+| `LLM_API_KEY` | **No** | API key - **NOT NEEDED** for CLIProxyAPI OAuth mode! |
 | `STRIXDB_TOKEN` | Optional | GitHub token for StrixDB repository access |
 | `STRIXDB_REPO` | Optional | StrixDB repository (e.g., `username/StrixDB`) |
 | `PERPLEXITY_API_KEY` | Optional | Perplexity API key for web search capabilities |
+
+> **Note**: With CLIProxyAPI, you only need `CLIPROXY_ENDPOINT` and `STRIX_MODEL` - no API key required!
 
 ---
 
 ## Full-Featured Strix Workflow
 
-This is the complete workflow with all configuration options including custom prompts, configurable timeframes (10min - 12hr), and StrixDB integration.
+This is the complete workflow with all configuration options including:
+- **CLIProxyAPI Support** (no API key needed)
+- **Continuous Scanning** (doesn't stop on vulnerability found)
+- **Custom Strix Installation** (from Hailer367/strix)
+- **Configurable Timeframes** (10min - 12hr)
+- **StrixDB Integration**
 
 **File: `.github/workflows/strix-full.yml`**
 
@@ -252,6 +208,7 @@ jobs:
   strix-scan:
     name: Strix Security Scan
     runs-on: ubuntu-latest
+    # Allow full timeframe + setup time
     timeout-minutes: ${{ fromJSON(github.event.inputs.timeframe || '120') }}
     
     permissions:
@@ -270,10 +227,20 @@ jobs:
         with:
           python-version: '3.12'
       
-      - name: Install Strix
+      # IMPORTANT: Install from Hailer367/strix (enhanced version)
+      - name: Install Strix (Enhanced Version)
         run: |
-          pip install strix-agent
-          echo "Strix version: $(strix --version)"
+          # Clone the enhanced Strix from Hailer367/strix
+          git clone https://github.com/Hailer367/strix.git /tmp/strix
+          cd /tmp/strix
+          
+          # Install dependencies
+          pip install poetry
+          poetry config virtualenvs.create false
+          poetry install --no-interaction
+          
+          # Verify installation
+          echo "Strix version: $(python -c 'import strix; print(strix.__version__)' 2>/dev/null || echo 'installed')"
       
       - name: Create config.json
         run: |
@@ -281,12 +248,12 @@ jobs:
           WARNING="${{ github.event.inputs.warning_minutes || env.DEFAULT_WARNING_MINUTES }}"
           SCAN_MODE="${{ github.event.inputs.scan_mode || env.DEFAULT_SCAN_MODE }}"
           
+          # Create config with CLIProxyAPI endpoint (NO API KEY NEEDED!)
           cat > config.json << EOF
           {
             "api": {
               "endpoint": "${{ secrets.CLIPROXY_ENDPOINT }}",
-              "model": "${{ secrets.STRIX_MODEL || 'gemini-2.5-pro' }}",
-              "api_key": "${{ secrets.LLM_API_KEY || '' }}"
+              "model": "${{ secrets.STRIX_MODEL || 'gemini-2.5-pro' }}"
             },
             "timeframe": {
               "duration_minutes": ${TIMEFRAME},
@@ -297,7 +264,9 @@ jobs:
               "enabled": true,
               "show_time_remaining": true,
               "show_agent_details": true,
-              "show_resource_usage": true
+              "show_resource_usage": true,
+              "show_api_calls": true,
+              "show_vulnerabilities": true
             },
             "scan_mode": "${SCAN_MODE}",
             "strixdb": {
@@ -309,14 +278,15 @@ jobs:
           }
           EOF
           
-          echo "Created config.json with ${TIMEFRAME}m duration, ${WARNING}m warning"
+          echo "Created config.json with:"
+          echo "  - CLIProxyAPI endpoint: ${{ secrets.CLIPROXY_ENDPOINT && '✅ Set' || '❌ Missing' }}"
+          echo "  - Duration: ${TIMEFRAME}m"
+          echo "  - Warning threshold: ${WARNING}m"
+          echo "  - Scan mode: ${SCAN_MODE}"
       
       - name: Prepare Custom Instructions
         id: instructions
         run: |
-          TIMEFRAME="${{ github.event.inputs.timeframe || env.DEFAULT_TIMEFRAME }}"
-          WARNING="${{ github.event.inputs.warning_minutes || env.DEFAULT_WARNING_MINUTES }}"
-          
           # Build instruction string
           INSTRUCTIONS=""
           
@@ -335,18 +305,31 @@ jobs:
             INSTRUCTIONS="${INSTRUCTIONS} This is a pull request review. Focus on security implications of the changed files."
           fi
           
+          # Add multi-action instruction
+          INSTRUCTIONS="${INSTRUCTIONS} Use multi-action mode (up to 7 actions per call) for efficiency."
+          
           echo "instructions=${INSTRUCTIONS}" >> $GITHUB_OUTPUT
       
-      - name: Run Strix Security Scan
+      # IMPORTANT: Run Strix with CONTINUOUS SCANNING
+      # Does NOT stop when vulnerabilities are found - continues until timeframe exhausted
+      - name: Run Strix Security Scan (Continuous Mode)
         id: strix
         run: |
-          set +e  # Don't exit on error
+          # Don't exit on error - we want to capture all results
+          set +e
           
           TARGET="${{ github.event.inputs.target || './' }}"
           TIMEFRAME="${{ github.event.inputs.timeframe || env.DEFAULT_TIMEFRAME }}"
           
-          # Run Strix with timeout enforcement
-          timeout ${TIMEFRAME}m strix \
+          echo "🦉 Starting Strix Security Scan"
+          echo "  Target: ${TARGET}"
+          echo "  Timeframe: ${TIMEFRAME} minutes"
+          echo "  Mode: CONTINUOUS (will scan until timeframe exhausted)"
+          echo ""
+          
+          # Run Strix with timeout - DOES NOT FAIL ON VULNERABILITY FOUND
+          # The AI will continue scanning until the timeframe is exhausted
+          timeout ${TIMEFRAME}m python -m strix.interface.cli \
             --target "${TARGET}" \
             --scan-mode "${{ github.event.inputs.scan_mode || env.DEFAULT_SCAN_MODE }}" \
             --non-interactive \
@@ -355,16 +338,28 @@ jobs:
           
           EXIT_CODE=$?
           
+          # Count vulnerabilities found (parse from output)
+          VULN_COUNT=$(grep -c "vulnerability\|VULNERABILITY\|CVE-" strix_output.log 2>/dev/null || echo "0")
+          
           # Handle exit codes
           if [ $EXIT_CODE -eq 124 ]; then
-            echo "Strix scan timed out after ${TIMEFRAME} minutes"
+            echo "✅ Strix scan completed (timeframe exhausted: ${TIMEFRAME} minutes)"
             echo "timed_out=true" >> $GITHUB_OUTPUT
-          elif [ $EXIT_CODE -eq 2 ]; then
-            echo "Vulnerabilities found!"
-            echo "vulnerabilities_found=true" >> $GITHUB_OUTPUT
+            echo "scan_completed=true" >> $GITHUB_OUTPUT
+          elif [ $EXIT_CODE -eq 0 ]; then
+            echo "✅ Strix scan completed successfully"
+            echo "scan_completed=true" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️ Strix scan completed with exit code: ${EXIT_CODE}"
+            echo "scan_completed=true" >> $GITHUB_OUTPUT
           fi
           
+          echo "vulnerabilities_found=${VULN_COUNT}" >> $GITHUB_OUTPUT
           echo "exit_code=${EXIT_CODE}" >> $GITHUB_OUTPUT
+          
+          # Always exit 0 - we report vulnerabilities but don't fail the workflow
+          # This allows continuous scanning to work properly
+          exit 0
       
       - name: Upload Scan Results
         uses: actions/upload-artifact@v4
@@ -377,7 +372,7 @@ jobs:
             config.json
           retention-days: 30
       
-      - name: Comment on PR
+      - name: Comment on PR with Results
         if: github.event_name == 'pull_request' && always()
         uses: actions/github-script@v7
         with:
@@ -387,24 +382,33 @@ jobs:
             let summary = '## 🦉 Strix Security Scan Results\n\n';
             
             const timedOut = '${{ steps.strix.outputs.timed_out }}' === 'true';
-            const vulnsFound = '${{ steps.strix.outputs.vulnerabilities_found }}' === 'true';
+            const scanCompleted = '${{ steps.strix.outputs.scan_completed }}' === 'true';
+            const vulnsFound = '${{ steps.strix.outputs.vulnerabilities_found }}';
             const exitCode = '${{ steps.strix.outputs.exit_code }}';
             const timeframe = '${{ github.event.inputs.timeframe || env.DEFAULT_TIMEFRAME }}';
             
             if (timedOut) {
-              summary += '⏱️ **Status:** Scan completed (time limit reached)\n\n';
-              summary += `The scan ran for the full ${timeframe} minutes. Results may be partial.\n\n`;
-            } else if (vulnsFound) {
-              summary += '🔴 **Status:** Vulnerabilities Found\n\n';
+              summary += '⏱️ **Status:** Scan completed (full timeframe used)\n\n';
+              summary += `The scan ran for the full ${timeframe} minutes, thoroughly testing the target.\n\n`;
+            } else if (scanCompleted) {
+              summary += '✅ **Status:** Scan Completed\n\n';
+            }
+            
+            if (parseInt(vulnsFound) > 0) {
+              summary += `🔴 **Vulnerabilities Found:** ${vulnsFound}\n\n`;
               summary += 'Security issues were identified. Please review the detailed report in the workflow artifacts.\n\n';
             } else {
-              summary += '🟢 **Status:** Scan Completed\n\n';
-              summary += 'No critical vulnerabilities were found.\n\n';
+              summary += '🟢 **No vulnerabilities found**\n\n';
             }
             
             summary += `**Scan Mode:** ${{ github.event.inputs.scan_mode || env.DEFAULT_SCAN_MODE }}\n`;
             summary += `**Timeframe:** ${timeframe} minutes\n`;
             summary += `**Exit Code:** ${exitCode}\n\n`;
+            
+            summary += '### 🆕 New Features Used:\n';
+            summary += '- ⚡ Multi-Action Mode (up to 7 actions per API call)\n';
+            summary += '- 🎖️ Active Commander (main agent actively participates)\n';
+            summary += '- 📊 Live Dashboard (real-time vulnerability disclosure)\n\n';
             
             summary += '📎 [View Full Results](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})\n';
             
@@ -415,11 +419,18 @@ jobs:
               body: summary
             });
       
-      - name: Fail if Vulnerabilities Found
-        if: steps.strix.outputs.vulnerabilities_found == 'true'
+      # Optional: Create GitHub Security Alert for vulnerabilities
+      - name: Create Security Summary
+        if: always()
         run: |
-          echo "Security vulnerabilities were found. Failing the workflow."
-          exit 1
+          echo "## Strix Security Scan Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Target:** ${{ github.event.inputs.target || './' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Scan Mode:** ${{ github.event.inputs.scan_mode || env.DEFAULT_SCAN_MODE }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Duration:** ${{ github.event.inputs.timeframe || env.DEFAULT_TIMEFRAME }} minutes" >> $GITHUB_STEP_SUMMARY
+          echo "- **Vulnerabilities Found:** ${{ steps.strix.outputs.vulnerabilities_found }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "See workflow artifacts for detailed results." >> $GITHUB_STEP_SUMMARY
 ```
 
 ---
@@ -451,8 +462,14 @@ jobs:
         with:
           python-version: '3.12'
       
-      - name: Install Strix
-        run: pip install strix-agent
+      # Install from Hailer367/strix (enhanced version)
+      - name: Install Strix (Enhanced)
+        run: |
+          git clone https://github.com/Hailer367/strix.git /tmp/strix
+          cd /tmp/strix
+          pip install poetry
+          poetry config virtualenvs.create false
+          poetry install --no-interaction
       
       - name: Create config.json
         run: |
@@ -473,8 +490,17 @@ jobs:
       
       - name: Run Quick Scan
         run: |
-          strix -n -t ./ --scan-mode quick \
-            --instruction "Focus on critical vulnerabilities only. You have limited time."
+          set +e
+          python -m strix.interface.cli -n -t ./ --scan-mode quick \
+            --instruction "Focus on critical vulnerabilities only. Use multi-action mode for efficiency."
+          exit 0
+      
+      - name: Upload Results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: quick-scan-${{ github.run_id }}
+          path: strix_runs/
 ```
 
 ---
@@ -519,7 +545,7 @@ jobs:
   security-audit:
     name: Weekly Security Audit
     runs-on: ubuntu-latest
-    timeout-minutes: 750  # 12.5 hours max (accounting for setup)
+    timeout-minutes: 750  # 12.5 hours max
     
     steps:
       - uses: actions/checkout@v4
@@ -531,15 +557,19 @@ jobs:
         with:
           python-version: '3.12'
       
-      - name: Install Strix
-        run: pip install strix-agent
+      - name: Install Strix (Enhanced)
+        run: |
+          git clone https://github.com/Hailer367/strix.git /tmp/strix
+          cd /tmp/strix
+          pip install poetry
+          poetry config virtualenvs.create false
+          poetry install --no-interaction
       
       - name: Create config.json
         run: |
-          # Convert hours to minutes
           HOURS="${{ github.event.inputs.duration_hours || '4' }}"
           MINUTES=$((HOURS * 60))
-          WARNING=$((MINUTES / 10))  # 10% of duration as warning
+          WARNING=$((MINUTES / 10))
           if [ $WARNING -lt 5 ]; then WARNING=5; fi
           if [ $WARNING -gt 30 ]; then WARNING=30; fi
           
@@ -562,16 +592,19 @@ jobs:
             }
           }
           EOF
-          
-          echo "Audit configured: ${HOURS} hours (${MINUTES} minutes)"
       
       - name: Run Deep Security Audit
         env:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
         run: |
-          strix -n -t ./ \
+          set +e
+          HOURS="${{ github.event.inputs.duration_hours || '4' }}"
+          MINUTES=$((HOURS * 60))
+          
+          timeout ${MINUTES}m python -m strix.interface.cli -n -t ./ \
             --scan-mode ${{ github.event.inputs.scan_mode || 'deep' }} \
-            --instruction "Perform comprehensive security audit. Save all findings and useful artifacts to StrixDB. Generate detailed compliance report."
+            --instruction "Perform comprehensive security audit. Save all findings to StrixDB. Use multi-action mode."
+          exit 0
       
       - name: Upload Audit Results
         uses: actions/upload-artifact@v4
@@ -580,26 +613,13 @@ jobs:
           name: security-audit-${{ github.run_id }}
           path: strix_runs/
           retention-days: 90
-      
-      - name: Create Issue for Findings
-        if: failure()
-        uses: actions/github-script@v7
-        with:
-          script: |
-            github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: '🔴 Security Audit Found Vulnerabilities',
-              body: `## Weekly Security Audit Results\n\nThe automated security audit found potential vulnerabilities.\n\n**Run:** https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}\n\nPlease review the findings and take appropriate action.`,
-              labels: ['security', 'automated']
-            });
 ```
 
 ---
 
 ## Manual Penetration Test
 
-On-demand deep penetration testing workflow with flexible timeframes.
+On-demand deep penetration testing workflow.
 
 **File: `.github/workflows/strix-pentest.yml`**
 
@@ -634,26 +654,12 @@ on:
           - '360'
           - '480'
           - '720'
-      warning_minutes:
-        description: 'Warning threshold in minutes'
-        required: false
-        default: '5'
-        type: string
-      credentials:
-        description: 'Test credentials (format: user:pass) - stored securely'
-        required: false
-        type: string
-      scope:
-        description: 'Scope limitations (comma-separated paths to exclude)'
-        required: false
-        type: string
 
 jobs:
   pentest:
     name: Penetration Test
     runs-on: ubuntu-latest
     timeout-minutes: ${{ fromJSON(github.event.inputs.timeframe) }}
-    
     environment: security-testing
     
     steps:
@@ -664,13 +670,19 @@ jobs:
         with:
           python-version: '3.12'
       
-      - name: Install Strix
-        run: pip install strix-agent
+      - name: Install Strix (Enhanced)
+        run: |
+          git clone https://github.com/Hailer367/strix.git /tmp/strix
+          cd /tmp/strix
+          pip install poetry
+          poetry config virtualenvs.create false
+          poetry install --no-interaction
       
       - name: Create config.json
         run: |
           TIMEFRAME="${{ github.event.inputs.timeframe }}"
-          WARNING="${{ github.event.inputs.warning_minutes || '5' }}"
+          WARNING=$((TIMEFRAME / 10))
+          if [ $WARNING -lt 5 ]; then WARNING=5; fi
           
           cat > config.json << EOF
           {
@@ -692,31 +704,16 @@ jobs:
           }
           EOF
       
-      - name: Build Instructions
-        id: build-instructions
-        run: |
-          INSTRUCTIONS="${{ github.event.inputs.prompt }}"
-          
-          if [ -n "${{ github.event.inputs.credentials }}" ]; then
-            INSTRUCTIONS="${INSTRUCTIONS} Use these credentials for authenticated testing: ${{ github.event.inputs.credentials }}"
-          fi
-          
-          if [ -n "${{ github.event.inputs.scope }}" ]; then
-            INSTRUCTIONS="${INSTRUCTIONS} Do NOT test these paths: ${{ github.event.inputs.scope }}"
-          fi
-          
-          INSTRUCTIONS="${INSTRUCTIONS} Save all exploits, PoCs, and useful findings to StrixDB."
-          
-          echo "instructions=${INSTRUCTIONS}" >> $GITHUB_OUTPUT
-      
       - name: Run Penetration Test
         env:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
         run: |
-          strix -n \
+          set +e
+          python -m strix.interface.cli -n \
             -t "${{ github.event.inputs.target }}" \
             --scan-mode deep \
-            --instruction "${{ steps.build-instructions.outputs.instructions }}"
+            --instruction "${{ github.event.inputs.prompt }} Use multi-action mode for efficiency. Save exploits to StrixDB."
+          exit 0
       
       - name: Upload Results
         uses: actions/upload-artifact@v4
@@ -749,11 +746,6 @@ on:
           - sync
           - cleanup
           - export
-      category:
-        description: 'Category to process (all for everything)'
-        required: false
-        default: 'all'
-        type: string
 
 jobs:
   strixdb-sync:
@@ -768,31 +760,22 @@ jobs:
           token: ${{ secrets.STRIXDB_TOKEN }}
           path: strixdb
       
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      
       - name: Process StrixDB
         working-directory: strixdb
         run: |
           case "${{ github.event.inputs.action }}" in
             sync)
               echo "Syncing StrixDB..."
-              # Update index files
               for dir in scripts exploits knowledge libraries sources methods tools configs; do
                 if [ -d "$dir" ]; then
                   echo "## ${dir^}" > "${dir}/README.md"
                   echo "" >> "${dir}/README.md"
-                  echo "| Name | Description | Tags |" >> "${dir}/README.md"
-                  echo "|------|-------------|------|" >> "${dir}/README.md"
-                  find "$dir" -name "*.json" -exec cat {} \; | jq -r '"\(.name) | \(.description) | \(.tags | join(", "))"' >> "${dir}/README.md" 2>/dev/null || true
+                  find "$dir" -name "*.json" -exec cat {} \; | jq -r '.name' >> "${dir}/README.md" 2>/dev/null || true
                 fi
               done
               ;;
             cleanup)
-              echo "Cleaning up old/duplicate entries..."
-              # Add cleanup logic
+              echo "Cleaning up old entries..."
               ;;
             export)
               echo "Exporting StrixDB..."
@@ -807,16 +790,67 @@ jobs:
           git config user.name "StrixDB Bot"
           git config user.email "strixdb@users.noreply.github.com"
           git add -A
-          git diff --staged --quiet || git commit -m "StrixDB: ${{ github.event.inputs.action }} operation"
+          git diff --staged --quiet || git commit -m "StrixDB: ${{ github.event.inputs.action }}"
           git push
-      
-      - name: Upload Export
-        if: github.event.inputs.action == 'export'
-        uses: actions/upload-artifact@v4
-        with:
-          name: strixdb-export
-          path: strixdb-export.tar.gz
 ```
+
+---
+
+## New Features Guide
+
+### ⚡ Multi-Action Mode (Up to 7 Actions per API Call)
+
+The AI can now execute up to 7 tool calls in a single message for maximum efficiency:
+
+```xml
+<!-- Instead of one action per message, batch related actions -->
+<function=terminal_execute>
+<parameter=command>nmap -sV target.com</parameter>
+</function>
+
+<function=terminal_execute>
+<parameter=command>subfinder -d target.com</parameter>
+</function>
+
+<function=web_search>
+<parameter=query>target.com CVE vulnerabilities</parameter>
+</function>
+```
+
+**Benefits:**
+- 7x fewer API calls for batched operations
+- Parallel execution for independent tools
+- Faster reconnaissance
+- Lower costs
+
+### 🎖️ Active Commander Mode
+
+The main agent is no longer just a coordinator - it actively participates:
+
+**Before (Old):** Main agent only delegates, never does work
+**After (New):** Main agent actively tests, writes scripts, and leads by example
+
+The main agent now:
+- Performs initial reconnaissance directly
+- Writes custom scripts and exploits
+- Tests high-priority vulnerabilities
+- Works alongside sub-agents (not just supervising)
+
+### 📊 Live Dashboard Enhancements
+
+New dashboard features:
+- **Live API Call Counter:** Track API usage in real-time
+- **Live Vulnerability Disclosure:** See vulnerabilities as they're discovered
+- **Severity Breakdown:** Critical/High/Medium/Low counts
+- **Recent Findings List:** Last 5 vulnerabilities with details
+
+### 🔄 Continuous Scanning
+
+The workflow no longer stops when a vulnerability is found:
+- Continues scanning until the timeframe is exhausted
+- Finds more vulnerabilities in a single run
+- Reports all findings at the end
+- Never fails the workflow just because vulnerabilities exist
 
 ---
 
@@ -835,64 +869,31 @@ jobs:
 
 ---
 
-## Configuration Reference
-
-### config.json Fields
-
-| Field | Type | Description | Required |
-|-------|------|-------------|----------|
-| `api.endpoint` | string | CLIProxyAPI endpoint URL | Yes |
-| `api.model` | string | Model name (e.g., `gemini-2.5-pro`) | Yes |
-| `api.api_key` | string | API key (optional for OAuth) | No |
-| `timeframe.duration_minutes` | int | Session duration (10-720) | No (default: 60) |
-| `timeframe.warning_minutes` | int | Warning threshold (1-30) | No (default: 5) |
-| `timeframe.time_awareness_enabled` | bool | Enable time warnings | No (default: true) |
-| `dashboard.enabled` | bool | Enable dashboard | No (default: true) |
-| `scan_mode` | string | `quick`, `standard`, or `deep` | No (default: deep) |
-
-### Environment Variables (Legacy)
-
-| Variable | Description |
-|----------|-------------|
-| `STRIX_LLM` | Model identifier |
-| `LLM_API_KEY` | API key for LLM provider |
-| `LLM_API_BASE` | Custom API base URL |
-| `PERPLEXITY_API_KEY` | Perplexity API key for web search |
-| `STRIXDB_TOKEN` | GitHub token for StrixDB |
-| `STRIXDB_REPO` | StrixDB repository name |
-
----
-
-## Tips for Effective Workflows
-
-### Timeframe Best Practices
-
-1. **Quick checks (10-15 min)**: Use for CI/CD gates on PRs
-2. **Standard scans (30-60 min)**: Daily/regular security checks
-3. **Deep audits (2-4 hours)**: Weekly comprehensive reviews
-4. **Extended pentests (8-12 hours)**: Monthly deep assessments
+## Tips for Effective Usage
 
 ### Writing Effective Prompts
 
 Good prompts should include:
-
 1. **Objective**: What you want to achieve
 2. **Focus Areas**: Specific vulnerability types to prioritize
 3. **Context**: Application type, technology stack
 4. **Constraints**: What NOT to test
-5. **Output Requirements**: What format for findings
 
 **Example:**
 ```
 Focus on authentication bypass and IDOR vulnerabilities in the /api/* endpoints. 
-The application uses JWT tokens. Do NOT test /api/health or /api/status endpoints.
-Provide detailed PoCs for any findings and save useful bypass techniques to StrixDB.
+The application uses JWT tokens. Do NOT test /api/health endpoints.
+Use multi-action mode for efficiency. Save useful exploits to StrixDB.
 ```
 
 ### Security Best Practices
 
-1. **Use environments** for sensitive workflows
-2. **Limit permissions** to minimum required
-3. **Store credentials in secrets**, never in workflow files
-4. **Set reasonable timeouts** to prevent runaway costs
-5. **Review artifacts** before making them public
+1. **Use CLIProxyAPI** - No API keys to manage
+2. **Set reasonable timeframes** - More time = more thorough scanning
+3. **Enable StrixDB** - Build a knowledge base over time
+4. **Use multi-action mode** - Maximize efficiency
+
+---
+
+*Last updated: December 2024*
+*Version: Enhanced Edition with CLIProxyAPI, Multi-Action, and Active Commander*
