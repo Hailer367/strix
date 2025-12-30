@@ -40,6 +40,14 @@
 > [!TIP]
 > Strix integrates seamlessly with **GitHub Actions** and CI/CD pipelines. Run automated security scans with configurable timeframes and prompts. See [Flows.md](Flows.md) for the workflow configuration!
 
+> [!IMPORTANT]
+> **🆕 MAJOR UPDATES in this Enhanced Edition:**
+> - ⚡ **Multi-Action Mode**: AI can execute up to 7 actions per API call for maximum efficiency
+> - 🎖️ **Active Commander**: Main agent now actively performs security testing (not just coordination)
+> - 🔑 **CLIProxyAPI Support**: Use API_ENDPOINT instead of API_KEY - no API keys needed!
+> - 📊 **Live Dashboard**: Real-time vulnerability disclosure and API call counter
+> - 🔄 **Continuous Scanning**: Workflow continues until timeframe exhausted (doesn't stop on first vuln)
+
 ---
 
 ## 🦉 Strix Overview
@@ -267,21 +275,78 @@ broadcast_message(
 get_orchestration_dashboard()
 ```
 
+### ⚡ Multi-Action Mode (NEW! - MAJOR EFFICIENCY UPDATE)
+
+The AI can now execute **up to 7 tool calls in a single message** for maximum efficiency:
+
+```xml
+<!-- Instead of one action per message, batch related actions -->
+<function=terminal_execute>
+<parameter=command>nmap -sV target.com</parameter>
+</function>
+
+<function=terminal_execute>
+<parameter=command>subfinder -d target.com</parameter>
+</function>
+
+<function=web_search>
+<parameter=query>target.com CVE vulnerabilities</parameter>
+</function>
+```
+
+**Benefits:**
+- ⚡ **7x fewer API calls** for batched operations
+- 🚀 **Parallel execution** for independent tools
+- 💰 **Lower costs** through reduced API usage
+- ⏱️ **Faster scanning** with concurrent operations
+
+### 🎖️ Active Commander Mode (NEW! - MAJOR UPDATE)
+
+The main agent is no longer just a passive coordinator - it actively participates in security testing:
+
+**What the Main Agent Now Does:**
+- ✅ Performs initial reconnaissance directly
+- ✅ Writes custom scripts and exploits
+- ✅ Tests high-priority vulnerabilities itself
+- ✅ Works alongside sub-agents (not just supervising)
+- ✅ Contributes findings to the final report
+
+**The main agent leads by example - like a real commander should!**
+
+### 📊 Live Dashboard Enhancements (NEW!)
+
+The real-time dashboard now includes:
+- 🔄 **Live API Call Counter** - Track API usage in real-time
+- 🐞 **Live Vulnerability Disclosure** - See vulnerabilities as they're discovered
+- 📈 **Severity Breakdown** - Critical/High/Medium/Low counts
+- 📋 **Recent Findings List** - Last 5 vulnerabilities with details
+
+### 🔄 Continuous Scanning Mode (NEW!)
+
+The workflow no longer stops when a vulnerability is found:
+- Continues scanning until the timeframe is exhausted
+- Finds more vulnerabilities in a single run
+- Reports all findings at the end
+- Never fails just because vulnerabilities exist
+
 ---
 
 ## 🚀 Quick Start
 
 **Prerequisites:**
 - Docker (running)
-- An LLM provider (CLIProxyAPI recommended, or API key from OpenAI/Anthropic/Google)
+- CLIProxyAPI (recommended) OR an API key from OpenAI/Anthropic/Google
 
 ### Installation & First Scan
 
 ```bash
-# Install Strix
-curl -sSL https://strix.ai/install | bash
+# Install Strix (Enhanced Edition from Hailer367/strix)
+git clone https://github.com/Hailer367/strix.git
+cd strix
+pip install poetry
+poetry install
 
-# Or via pipx
+# Or via pipx (original version)
 pipx install strix-agent
 
 # Run your first security assessment

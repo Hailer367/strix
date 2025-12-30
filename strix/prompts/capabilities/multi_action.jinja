@@ -1,0 +1,144 @@
+<multi_action_capability>
+## ⚡ MULTI-ACTION MODE - UP TO 7 ACTIONS PER CALL
+
+You have the ability to execute **UP TO 7 TOOL CALLS IN A SINGLE MESSAGE** for maximum efficiency. This dramatically reduces API calls and speeds up your work.
+
+### HOW TO USE MULTI-ACTION:
+
+Instead of making one tool call per message, you can chain multiple related tool calls together:
+
+**SINGLE ACTION (old way - inefficient):**
+```xml
+<function=terminal_execute>
+<parameter=command>nmap -sV target.com</parameter>
+</function>
+```
+
+**MULTI-ACTION (new way - efficient):**
+```xml
+<function=terminal_execute>
+<parameter=command>nmap -sV target.com -o nmap_results.txt</parameter>
+</function>
+
+<function=terminal_execute>
+<parameter=command>subfinder -d target.com -o subdomains.txt</parameter>
+</function>
+
+<function=terminal_execute>
+<parameter=command>httpx -l subdomains.txt -o live_hosts.txt</parameter>
+</function>
+
+<function=python_execute>
+<parameter=code>
+# Parse and analyze results
+with open('nmap_results.txt') as f:
+    print(f.read())
+</parameter>
+</function>
+```
+
+### WHEN TO USE MULTI-ACTION:
+
+**PERFECT FOR:**
+- Running multiple scans simultaneously
+- Installing multiple packages at once
+- Reading multiple files
+- Creating multiple files
+- Performing related operations that don't depend on each other
+- Initial reconnaissance (run multiple discovery tools)
+- Setting up test environment (install tools, create files, start services)
+
+**NOT RECOMMENDED FOR:**
+- Operations where step 2 depends on step 1's output
+- Finish/completion actions (these stop processing)
+- Agent creation (create one at a time for clarity)
+
+### EXAMPLES OF EFFICIENT MULTI-ACTION:
+
+**Example 1: Reconnaissance Phase**
+```xml
+<function=terminal_execute>
+<parameter=command>subfinder -d target.com -o subs.txt</parameter>
+</function>
+
+<function=terminal_execute>
+<parameter=command>nmap -sV -sC target.com</parameter>
+</function>
+
+<function=terminal_execute>
+<parameter=command>whatweb target.com</parameter>
+</function>
+
+<function=web_search>
+<parameter=query>target.com site:github.com</parameter>
+</function>
+```
+
+**Example 2: Tool Setup**
+```xml
+<function=install_pip_package>
+<parameter=packages>sqlmap dirsearch</parameter>
+</function>
+
+<function=install_package>
+<parameter=packages>nikto gobuster</parameter>
+</function>
+
+<function=terminal_execute>
+<parameter=command>mkdir -p /workspace/results /workspace/payloads</parameter>
+</function>
+```
+
+**Example 3: Multiple File Operations**
+```xml
+<function=read_file>
+<parameter=file_path>/workspace/results/scan1.txt</parameter>
+</function>
+
+<function=read_file>
+<parameter=file_path>/workspace/results/scan2.txt</parameter>
+</function>
+
+<function=read_file>
+<parameter=file_path>/workspace/config.json</parameter>
+</function>
+```
+
+### LIMITS AND RULES:
+
+1. **Maximum 7 actions per message** - System will process only the first 7
+2. **Independent actions execute in parallel** - Order doesn't matter for independent tools
+3. **Sequential tools execute in order** - finish_scan, agent_finish, create_agent, etc.
+4. **All results returned together** - You'll see all results in one response
+
+### EFFICIENCY GAINS:
+
+- 🚀 **7x fewer API calls** for batched operations
+- ⚡ **Parallel execution** for independent tools
+- 🎯 **Faster reconnaissance** by running tools concurrently
+- 💰 **Lower costs** through reduced API usage
+
+### THINK BEFORE MULTI-ACTION:
+
+Use the `think` tool first to plan which actions can be batched:
+
+```xml
+<function=think>
+<parameter=thought>
+I need to:
+1. Run nmap scan - independent
+2. Run subfinder - independent  
+3. Check for robots.txt - independent
+4. Search for CVEs - independent
+
+These are all independent, I can batch them!
+</parameter>
+</function>
+```
+
+Then execute them all together in the next message.
+
+### REMEMBER:
+
+Multi-action is about EFFICIENCY. Use it wisely to accomplish more with fewer API calls while maintaining quality and thoroughness in your security testing.
+</multi_action_capability>

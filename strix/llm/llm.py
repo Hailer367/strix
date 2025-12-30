@@ -34,13 +34,20 @@ def _get_api_key() -> str | None:
     Priority:
     1. config.json api.api_key
     2. LLM_API_KEY environment variable
-    3. Default placeholder for CLIProxyAPI OAuth mode
+    3. Default placeholder for CLIProxyAPI OAuth mode (when endpoint is set)
+    
+    CLIProxyAPI Mode:
+    When using CLIProxyAPI, you only need to set the API_ENDPOINT - no API key required!
+    CLIProxyAPI handles authentication through OAuth, so API keys are optional.
     """
     try:
         from strix.config import get_config
         config = get_config()
         if config.api_key:
             return config.api_key
+        # If endpoint is set but no API key, use CLIProxyAPI OAuth mode
+        if config.api_endpoint:
+            return "cliproxy-oauth-mode"
     except (ImportError, Exception):
         pass
     
@@ -49,8 +56,18 @@ def _get_api_key() -> str | None:
     if api_key:
         return api_key
     
-    # CLIProxyAPI OAuth mode doesn't require an API key
-    return "cliproxy-oauth-mode"
+    # Check if API endpoint is set (CLIProxyAPI mode)
+    api_endpoint = (
+        os.getenv("CLIPROXY_ENDPOINT")
+        or os.getenv("LLM_API_BASE")
+        or os.getenv("OPENAI_API_BASE")
+        or os.getenv("LITELLM_BASE_URL")
+    )
+    if api_endpoint:
+        # CLIProxyAPI OAuth mode - no API key needed
+        return "cliproxy-oauth-mode"
+    
+    return None
 
 
 def _get_api_base() -> str | None:
@@ -58,7 +75,12 @@ def _get_api_base() -> str | None:
     
     Priority:
     1. config.json api.endpoint (CLIProxyAPI endpoint)
-    2. LLM_API_BASE / OPENAI_API_BASE / LITELLM_BASE_URL environment variables
+    2. CLIPROXY_ENDPOINT environment variable (recommended for CLIProxyAPI)
+    3. LLM_API_BASE / OPENAI_API_BASE / LITELLM_BASE_URL environment variables
+    
+    CLIProxyAPI Mode:
+    Set CLIPROXY_ENDPOINT or api.endpoint in config.json to use CLIProxyAPI.
+    Example: http://localhost:8317/v1
     """
     try:
         from strix.config import get_config
@@ -68,9 +90,10 @@ def _get_api_base() -> str | None:
     except (ImportError, Exception):
         pass
     
-    # Fall back to environment variables
+    # Fall back to environment variables (CLIPROXY_ENDPOINT has priority)
     return (
-        os.getenv("LLM_API_BASE")
+        os.getenv("CLIPROXY_ENDPOINT")
+        or os.getenv("LLM_API_BASE")
         or os.getenv("OPENAI_API_BASE")
         or os.getenv("LITELLM_BASE_URL")
         or os.getenv("OLLAMA_API_BASE")
@@ -361,9 +384,13 @@ class LLM:
 
             content = _truncate_to_first_function(content)
 
+            # Multi-action support: find all function calls (up to 7)
+            # Ensure content ends properly if truncated
             if "</function>" in content:
-                function_end_index = content.find("</function>") + len("</function>")
-                content = content[:function_end_index]
+                # Find the last complete function tag
+                last_func_end = content.rfind("</function>")
+                if last_func_end != -1:
+                    content = content[:last_func_end + len("</function>")]
 
             tool_invocations = parse_tool_invocations(content)
 

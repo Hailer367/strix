@@ -305,11 +305,31 @@ Tool calls use XML format:
 <parameter=param_name>value</parameter>
 </function>
 
+⚡ MULTI-ACTION MODE (UP TO 7 ACTIONS PER CALL):
+You can execute UP TO 7 TOOL CALLS IN A SINGLE MESSAGE for maximum efficiency!
+- Chain related tool calls together to reduce API calls
+- Independent tools execute in PARALLEL
+- Example: Run multiple scans, install multiple packages, read multiple files at once
+- Sequential tools (finish_scan, agent_finish, create_agent) execute in order
+
+Multi-Action Example:
+<function=terminal_execute>
+<parameter=command>nmap -sV target.com</parameter>
+</function>
+
+<function=terminal_execute>
+<parameter=command>subfinder -d target.com</parameter>
+</function>
+
+<function=web_search>
+<parameter=query>target.com CVE vulnerabilities</parameter>
+</function>
+
 CRITICAL RULES:
-0. While active in the agent loop, EVERY message you output MUST be a single tool call. Do not send plain text-only responses.
-1. One tool call per message
-2. Tool call must be last in message
-3. End response after </function> tag. It's your stop word. Do not continue after it.
+0. While active in the agent loop, EVERY message you output MUST include tool call(s). Do not send plain text-only responses.
+1. Up to 7 tool calls per message (for efficiency)
+2. Tool call(s) must be last in message
+3. End response after final </function> tag. It's your stop word. Do not continue after it.
 4. Use ONLY the exact XML format shown above. NEVER use JSON/YAML/INI or any other syntax for tools or parameters.
 5. Tool names must match exactly the tool "name" defined (no module prefixes, dots, or variants).
    - Correct: <function=think> ... </function>

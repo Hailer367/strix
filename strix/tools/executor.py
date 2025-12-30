@@ -260,18 +260,95 @@ def _get_tracer_and_agent_id(agent_state: Any | None) -> tuple[Any | None, str]:
     return tracer, agent_id
 
 
+def _can_execute_in_parallel(tool_name: str) -> bool:
+    """Check if a tool can be safely executed in parallel with others.
+    
+    Some tools must be executed sequentially (finish tools, state-modifying tools).
+    """
+    # Tools that must be executed sequentially
+    sequential_tools = {
+        "finish_scan",
+        "agent_finish",
+        "create_agent",
+        "wait_for_message",
+        "send_message",
+    }
+    return tool_name not in sequential_tools
+
+
 async def process_tool_invocations(
     tool_invocations: list[dict[str, Any]],
     conversation_history: list[dict[str, Any]],
     agent_state: Any | None = None,
 ) -> bool:
+    """Process tool invocations with support for parallel execution.
+    
+    Multi-Action Support:
+    - Up to 7 tool invocations can be processed per call for efficiency
+    - Independent tools are executed in parallel when possible
+    - Sequential tools (finish_scan, agent_finish, etc.) are executed in order
+    """
+    import asyncio
+    
     observation_parts: list[str] = []
     all_images: list[dict[str, Any]] = []
     should_agent_finish = False
 
     tracer, agent_id = _get_tracer_and_agent_id(agent_state)
-
+    
+    # Limit to 7 actions per call (multi-action cap)
+    MAX_ACTIONS_PER_CALL = 7
+    tool_invocations = tool_invocations[:MAX_ACTIONS_PER_CALL]
+    
+    # Separate parallel-safe and sequential tools
+    parallel_tools = []
+    sequential_tools = []
+    
     for tool_inv in tool_invocations:
+        tool_name = tool_inv.get("toolName", "unknown")
+        if _can_execute_in_parallel(tool_name):
+            parallel_tools.append(tool_inv)
+        else:
+            sequential_tools.append(tool_inv)
+    
+    # Execute parallel-safe tools concurrently
+    if parallel_tools:
+        async def execute_with_index(idx: int, tool_inv: dict[str, Any]) -> tuple[int, str, list, bool]:
+            obs, imgs, finish = await _execute_single_tool(tool_inv, agent_state, tracer, agent_id)
+            return (idx, obs, imgs, finish)
+        
+        tasks = [
+            execute_with_index(i, tool_inv) 
+            for i, tool_inv in enumerate(parallel_tools)
+        ]
+        
+        # Execute in parallel
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Sort by original index to maintain order in output
+        sorted_results = []
+        for result in results:
+            if isinstance(result, Exception):
+                # Handle exceptions gracefully
+                sorted_results.append((
+                    len(sorted_results),
+                    f"<tool_result>\n<tool_name>error</tool_name>\n<result>Error: {result}</result>\n</tool_result>",
+                    [],
+                    False
+                ))
+            else:
+                sorted_results.append(result)
+        
+        sorted_results.sort(key=lambda x: x[0])
+        
+        for _, observation_xml, images, tool_should_finish in sorted_results:
+            observation_parts.append(observation_xml)
+            all_images.extend(images)
+            if tool_should_finish:
+                should_agent_finish = True
+    
+    # Execute sequential tools one by one
+    for tool_inv in sequential_tools:
         observation_xml, images, tool_should_finish = await _execute_single_tool(
             tool_inv, agent_state, tracer, agent_id
         )
@@ -280,6 +357,8 @@ async def process_tool_invocations(
 
         if tool_should_finish:
             should_agent_finish = True
+            # Stop processing if finish tool was called
+            break
 
     if all_images:
         content = [{"type": "text", "text": "Tool Results:\n\n" + "\n\n".join(observation_parts)}]
