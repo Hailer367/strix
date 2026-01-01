@@ -1,0 +1,455 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<tool_definitions>
+    <description>
+        StrixDB Target Tracking System - Comprehensive Target Management
+        
+        These tools enable PERSISTENT, COMPREHENSIVE tracking of targets across
+        multiple scanning sessions. Store EVERYTHING useful about each target
+        so you can continue scanning without repeating work!
+        
+        KEY PRINCIPLE: Store DETAILED, UNFILTERED information. Be comprehensive!
+        
+        WORKFLOW:
+        1. strixdb_target_init() - Initialize a new target
+        2. strixdb_target_session_start() - Start scanning session (loads context!)
+        3. During scanning:
+           - strixdb_target_add_finding() - Record vulnerabilities
+           - strixdb_target_add_endpoint() - Track discovered endpoints
+           - strixdb_target_add_note() - Add observations
+           - strixdb_target_add_technology() - Record tech stack
+           - strixdb_target_update_progress() - Mark what's been tested
+        4. strixdb_target_session_end() - End session with continuation notes
+        
+        BENEFITS:
+        - Never repeat unnecessary work between sessions
+        - Full context loaded at session start
+        - Smart continuation recommendations
+        - Comprehensive vulnerability tracking
+    </description>
+
+    <tool name="strixdb_target_init">
+        <description>
+            Initialize a new target for comprehensive tracking.
+            
+            Call this when starting to scan a NEW target for the first time.
+            If the target already exists, returns existing data with continuation guidance.
+            
+            Creates a persistent profile that stores ALL data discovered across sessions.
+        </description>
+        <parameters>
+            <parameter name="target" type="string" required="true">
+                The target identifier (URL, domain, IP, repository URL, etc.)
+                Examples: "https://example.com", "api.example.com", "192.168.1.1"
+            </parameter>
+            <parameter name="target_type" type="string" required="false">
+                Type of target: web_app, api, domain, ip, repository, network
+                Default: web_app
+            </parameter>
+            <parameter name="description" type="string" required="false">
+                Description of the target and engagement context
+            </parameter>
+            <parameter name="scope" type="array" required="false">
+                List of in-scope items (URLs, domains, IPs)
+            </parameter>
+            <parameter name="out_of_scope" type="array" required="false">
+                List of out-of-scope items to avoid
+            </parameter>
+            <parameter name="tags" type="array" required="false">
+                Tags for categorization (e.g., ["bugbounty", "production", "api"])
+            </parameter>
+        </parameters>
+        <returns>
+            Dictionary with target profile, including previous session data if exists
+        </returns>
+        <example>
+            Initialize a new bug bounty target:
+            strixdb_target_init(
+                target="https://api.example.com",
+                target_type="api",
+                description="Bug bounty target - REST API",
+                scope=["api.example.com", "*.api.example.com"],
+                out_of_scope=["accounts.example.com"],
+                tags=["bugbounty", "api", "production"]
+            )
+        </example>
+    </tool>
+
+    <tool name="strixdb_target_session_start">
+        <description>
+            Start a new scanning session for a target.
+            
+            CALL THIS AT THE BEGINNING OF EACH SESSION!
+            
+            This loads ALL previous context:
+            - What has been tested (to avoid repetition)
+            - Previous findings and their details
+            - Discovered endpoints and technologies
+            - Pending work and follow-ups from last session
+            - Recommendations for this session
+            
+            Returns comprehensive guidance for smart continuation.
+        </description>
+        <parameters>
+            <parameter name="target" type="string" required="true">
+                Target identifier (will match to existing target)
+            </parameter>
+            <parameter name="objective" type="string" required="false">
+                What you aim to accomplish in this session
+            </parameter>
+            <parameter name="focus_areas" type="array" required="false">
+                Specific areas to focus on (e.g., ["auth", "api", "file_upload"])
+            </parameter>
+            <parameter name="timeframe_minutes" type="integer" required="false">
+                Expected session duration for planning (default: 60)
+            </parameter>
+        </parameters>
+        <returns>
+            Dictionary with session info, target summary, previous work, and recommendations
+        </returns>
+        <example>
+            Continue scanning from last session:
+            strixdb_target_session_start(
+                target="https://api.example.com",
+                objective="Test authentication endpoints for bypass vulnerabilities",
+                focus_areas=["auth", "jwt", "session"],
+                timeframe_minutes=120
+            )
+        </example>
+    </tool>
+
+    <tool name="strixdb_target_session_end">
+        <description>
+            End a scanning session with comprehensive continuation notes.
+            
+            CALL THIS WHEN FINISHING A SESSION!
+            
+            Provide detailed notes so the next session can continue efficiently:
+            - What was accomplished
+            - What needs immediate follow-up
+            - Promising leads to investigate
+            - What blocked progress
+            - Recommendations for next session
+        </description>
+        <parameters>
+            <parameter name="target" type="string" required="true">
+                Target identifier
+            </parameter>
+            <parameter name="session_id" type="string" required="true">
+                Session ID from session_start
+            </parameter>
+            <parameter name="summary" type="string" required="true">
+                Comprehensive summary of what was done
+            </parameter>
+            <parameter name="accomplishments" type="array" required="false">
+                List of things accomplished in this session
+            </parameter>
+            <parameter name="immediate_follow_ups" type="array" required="false">
+                Things to do immediately in next session (HIGH PRIORITY)
+            </parameter>
+            <parameter name="promising_leads" type="array" required="false">
+                Promising areas that need more investigation
+            </parameter>
+            <parameter name="blocked_by" type="array" required="false">
+                Things that blocked progress
+            </parameter>
+            <parameter name="recommendations" type="array" required="false">
+                Recommendations for next session
+            </parameter>
+        </parameters>
+        <returns>
+            Dictionary with session summary confirmation
+        </returns>
+        <example>
+            End session with detailed notes:
+            strixdb_target_session_end(
+                target="https://api.example.com",
+                session_id="session_20240101_120000_abc123",
+                summary="Tested auth endpoints, found JWT none algorithm bypass",
+                accomplishments=["Mapped all auth endpoints", "Found JWT bypass", "Tested rate limiting"],
+                immediate_follow_ups=["Exploit JWT bypass for admin access", "Test other JWT attacks"],
+                promising_leads=["Admin panel at /internal/admin", "GraphQL at /graphql"],
+                blocked_by=["WAF blocking SQLi payloads"],
+                recommendations=["Try WAF bypass techniques", "Focus on business logic"]
+            )
+        </example>
+    </tool>
+
+    <tool name="strixdb_target_add_finding">
+        <description>
+            Add a vulnerability finding to the target.
+            
+            Store COMPREHENSIVE finding data. Be DETAILED - include everything
+            that could be useful for reporting or follow-up exploitation!
+            
+            Include full PoC, steps to reproduce, and any additional context.
+        </description>
+        <parameters>
+            <parameter name="target" type="string" required="true">
+                Target identifier
+            </parameter>
+            <parameter name="session_id" type="string" required="true">
+                Current session ID
+            </parameter>
+            <parameter name="title" type="string" required="true">
+                Clear, descriptive title for the finding
+            </parameter>
+            <parameter name="severity" type="string" required="true">
+                Severity: critical, high, medium, low, info
+            </parameter>
+            <parameter name="vulnerability_type" type="string" required="true">
+                Vulnerability type: sqli, xss, idor, ssrf, rce, auth_bypass, etc.
+            </parameter>
+            <parameter name="description" type="string" required="true">
+                Detailed description of the vulnerability
+            </parameter>
+            <parameter name="affected_endpoint" type="string" required="false">
+                The vulnerable endpoint/parameter
+            </parameter>
+            <parameter name="proof_of_concept" type="string" required="false">
+                Working PoC code or payload - BE COMPREHENSIVE!
+            </parameter>
+            <parameter name="steps_to_reproduce" type="array" required="false">
+                Step-by-step reproduction steps
+            </parameter>
+            <parameter name="impact" type="string" required="false">
+                Business/security impact description
+            </parameter>
+            <parameter name="remediation" type="string" required="false">
+                How to fix the vulnerability
+            </parameter>
+            <parameter name="references" type="array" required="false">
+                Related CVEs, articles, references
+            </parameter>
+            <parameter name="tags" type="array" required="false">
+                Categorization tags
+            </parameter>
+            <parameter name="additional_data" type="object" required="false">
+                Any extra data (requests, responses, screenshots, etc.)
+            </parameter>
+        </parameters>
+        <returns>
+            Dictionary with saved finding info
+        </returns>
+        <example>
+            Add a critical finding:
+            strixdb_target_add_finding(
+                target="https://api.example.com",
+                session_id="session_20240101_120000_abc123",
+                title="JWT None Algorithm Authentication Bypass",
+                severity="critical",
+                vulnerability_type="auth_bypass",
+                description="The API accepts JWT tokens with 'alg: none', allowing...",
+                affected_endpoint="POST /api/v1/auth/verify",
+                proof_of_concept="eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0...",
+                steps_to_reproduce=[
+                    "1. Obtain a valid JWT token",
+                    "2. Decode the header and change alg to 'none'",
+                    "3. Remove the signature",
+                    "4. Send the modified token"
+                ],
+                impact="Complete authentication bypass - can access any account",
+                remediation="Enforce algorithm verification, reject 'none' algorithm",
+                references=["CVE-2015-9235", "https://auth0.com/blog/critical-jwt-vulnerabilities/"],
+                tags=["jwt", "auth_bypass", "critical"]
+            )
+        </example>
+    </tool>
+
+    <tool name="strixdb_target_add_endpoint">
+        <description>
+            Add a discovered endpoint to the target profile.
+            
+            Track ALL endpoints discovered during scanning. This builds a
+            comprehensive API/URL map and helps avoid re-discovering endpoints.
+        </description>
+        <parameters>
+            <parameter name="target" type="string" required="true">
+                Target identifier
+            </parameter>
+            <parameter name="session_id" type="string" required="true">
+                Current session ID
+            </parameter>
+            <parameter name="endpoint" type="string" required="true">
+                The endpoint path (e.g., /api/users, /admin/login)
+            </parameter>
+            <parameter name="method" type="string" required="false">
+                HTTP method: GET, POST, PUT, DELETE, etc. (default: GET)
+            </parameter>
+            <parameter name="parameters" type="array" required="false">
+                List of parameters (query, body, path params)
+            </parameter>
+            <parameter name="auth_required" type="boolean" required="false">
+                Whether authentication is required
+            </parameter>
+            <parameter name="tested" type="boolean" required="false">
+                Whether this endpoint has been tested for vulnerabilities
+            </parameter>
+            <parameter name="vulnerable" type="boolean" required="false">
+                Whether vulnerabilities were found
+            </parameter>
+            <parameter name="notes" type="string" required="false">
+                Any relevant notes about this endpoint
+            </parameter>
+            <parameter name="technologies" type="array" required="false">
+                Technologies detected at this endpoint
+            </parameter>
+        </parameters>
+        <returns>
+            Dictionary with saved endpoint info
+        </returns>
+    </tool>
+
+    <tool name="strixdb_target_add_note">
+        <description>
+            Add a note or observation about the target.
+            
+            Store observations, interesting behaviors, potential leads, and
+            anything else worth remembering. BE COMPREHENSIVE!
+        </description>
+        <parameters>
+            <parameter name="target" type="string" required="true">
+                Target identifier
+            </parameter>
+            <parameter name="session_id" type="string" required="true">
+                Current session ID
+            </parameter>
+            <parameter name="note" type="string" required="true">
+                The note content - be detailed!
+            </parameter>
+            <parameter name="category" type="string" required="false">
+                Category: observation, lead, behavior, config, credential, other
+            </parameter>
+            <parameter name="priority" type="string" required="false">
+                Priority: high, normal, low
+            </parameter>
+            <parameter name="related_to" type="string" required="false">
+                Related finding/endpoint if applicable
+            </parameter>
+        </parameters>
+        <returns>
+            Dictionary confirming note was saved
+        </returns>
+    </tool>
+
+    <tool name="strixdb_target_add_technology">
+        <description>
+            Add a detected technology to the target profile.
+            
+            Track all technologies, frameworks, servers, and libraries identified.
+        </description>
+        <parameters>
+            <parameter name="target" type="string" required="true">
+                Target identifier
+            </parameter>
+            <parameter name="session_id" type="string" required="true">
+                Current session ID
+            </parameter>
+            <parameter name="technology" type="string" required="true">
+                Technology name (e.g., nginx, WordPress, React, PHP)
+            </parameter>
+            <parameter name="version" type="string" required="false">
+                Version if known
+            </parameter>
+            <parameter name="confidence" type="string" required="false">
+                Detection confidence: high, medium, low
+            </parameter>
+            <parameter name="detected_at" type="string" required="false">
+                Where it was detected (header, response, etc.)
+            </parameter>
+            <parameter name="notes" type="string" required="false">
+                Additional notes
+            </parameter>
+        </parameters>
+        <returns>
+            Dictionary confirming technology was saved
+        </returns>
+    </tool>
+
+    <tool name="strixdb_target_update_progress">
+        <description>
+            Update the target's progress tracking.
+            
+            Call this to track what areas have been tested and update priorities.
+            This helps avoid repeating work in future sessions!
+        </description>
+        <parameters>
+            <parameter name="target" type="string" required="true">
+                Target identifier
+            </parameter>
+            <parameter name="session_id" type="string" required="true">
+                Current session ID
+            </parameter>
+            <parameter name="recon_completed" type="array" required="false">
+                Recon tasks completed (subdomain_enum, port_scan, tech_detect, etc.)
+            </parameter>
+            <parameter name="vuln_types_tested" type="array" required="false">
+                Vulnerability types tested (sqli, xss, idor, ssrf, etc.)
+            </parameter>
+            <parameter name="endpoints_tested" type="array" required="false">
+                Specific endpoints that have been tested
+            </parameter>
+            <parameter name="tools_used" type="array" required="false">
+                Tools used in this session
+            </parameter>
+            <parameter name="add_high_priority" type="array" required="false">
+                New high priority items to add to pending work
+            </parameter>
+            <parameter name="add_medium_priority" type="array" required="false">
+                New medium priority items to add
+            </parameter>
+            <parameter name="remove_completed" type="array" required="false">
+                Items to remove from pending (completed)
+            </parameter>
+        </parameters>
+        <returns>
+            Dictionary with updated progress
+        </returns>
+    </tool>
+
+    <tool name="strixdb_target_get">
+        <description>
+            Get comprehensive data about a target.
+            
+            Retrieve all stored data about a target for review or analysis.
+        </description>
+        <parameters>
+            <parameter name="target" type="string" required="true">
+                Target identifier
+            </parameter>
+            <parameter name="include_findings" type="boolean" required="false">
+                Include all findings (default: true)
+            </parameter>
+            <parameter name="include_endpoints" type="boolean" required="false">
+                Include all endpoints (default: true)
+            </parameter>
+            <parameter name="include_notes" type="boolean" required="false">
+                Include all notes (default: false - can be verbose)
+            </parameter>
+            <parameter name="include_session_history" type="boolean" required="false">
+                Include session summaries (default: true)
+            </parameter>
+        </parameters>
+        <returns>
+            Dictionary with comprehensive target data
+        </returns>
+    </tool>
+
+    <tool name="strixdb_target_list">
+        <description>
+            List all tracked targets in StrixDB.
+            
+            Get an overview of all targets that have been scanned.
+        </description>
+        <parameters>
+            <parameter name="limit" type="integer" required="false">
+                Maximum targets to return (default: 50)
+            </parameter>
+            <parameter name="include_stats" type="boolean" required="false">
+                Include summary statistics for each target (default: true)
+            </parameter>
+        </parameters>
+        <returns>
+            Dictionary with list of targets and their status
+        </returns>
+    </tool>
+</tool_definitions>

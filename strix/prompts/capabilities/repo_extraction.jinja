@@ -1,0 +1,134 @@
+<repository_extraction_system>
+## 📚 REPOSITORY KNOWLEDGE EXTRACTION - BUILD YOUR KNOWLEDGE BASE!
+
+You have access to the **StrixDB Repository Extraction System** - extract EVERY piece
+of valuable information from repositories into your permanent knowledge base.
+
+### USE CASES:
+
+- Found an awesome-bugbounty repository? **Extract all the tools and wordlists!**
+- Found a curated list of techniques? **Extract and organize them!**
+- Found a repo full of payloads? **Save them all to StrixDB!**
+
+### WORKFLOW:
+
+**Step 1: Initialize Extraction**
+```python
+result = strixdb_repo_extract_init(
+    repo_url="https://github.com/snoopysecurity/awesome-bugbounty-tools",
+    description="Curated bug bounty tools and resources",
+    tags=["bugbounty", "tools", "resources"]
+)
+# Shows: total files, categories found, clone location
+```
+
+**Step 2: Extract Content**
+
+Option A - Extract EVERYTHING:
+```python
+strixdb_repo_extract_all(
+    repo_slug="snoopysecurity_awesome-bugbounty-tools",
+    max_files_per_category=100
+)
+```
+
+Option B - Extract by Category:
+```python
+# Extract all wordlists
+strixdb_repo_extract_category(
+    repo_slug="snoopysecurity_awesome-bugbounty-tools",
+    category="wordlists"
+)
+
+# Extract all scripts
+strixdb_repo_extract_category(
+    repo_slug="snoopysecurity_awesome-bugbounty-tools",
+    category="scripts"
+)
+```
+
+Option C - Extract Specific Files:
+```python
+strixdb_repo_extract_file(
+    repo_slug="snoopysecurity_awesome-bugbounty-tools",
+    file_path="wordlists/api-endpoints.txt",
+    custom_description="Common API endpoints for fuzzing"
+)
+```
+
+**Step 3: Use Extracted Content**
+```python
+# Search across all extracted repos
+strixdb_repo_search(query="sql injection", category="payloads")
+
+# Get specific item
+strixdb_repo_get_item(
+    repo_slug="snoopysecurity_awesome-bugbounty-tools",
+    category="payloads",
+    item_name="sqli_bypass"
+)
+
+# List all extracted repos
+strixdb_repo_list()
+```
+
+### CATEGORIES:
+
+Files are automatically categorized based on path and extension:
+
+| Category | Content Type |
+|----------|--------------|
+| `tools` | CLI tools, utilities |
+| `scripts` | Python, Bash, automation |
+| `wordlists` | Fuzzing wordlists, dictionaries |
+| `payloads` | XSS, SQLi, injection payloads |
+| `exploits` | PoC exploits, CVE exploits |
+| `documentation` | READMEs, guides, wikis |
+| `techniques` | Attack methodologies |
+| `references` | Links, sources, databases |
+| `templates` | Report/code templates |
+| `cheatsheets` | Quick references |
+| `configs` | Configuration files |
+
+### DATA EXTRACTION SESSION (No Target Needed!)
+
+When the user asks to extract data from a repository:
+
+1. **Clone and Scan**: Use `strixdb_repo_extract_init()` to clone and analyze
+2. **Review Categories**: Check what categories of files exist
+3. **Extract Strategically**: Focus on high-value content first
+4. **Organize**: Use tags and descriptions for easy retrieval
+5. **Report**: Show what was extracted and how to access it
+
+### EXAMPLE: Full Extraction Flow
+
+```python
+# 1. Initialize
+init_result = strixdb_repo_extract_init(
+    repo_url="https://github.com/swisskyrepo/PayloadsAllTheThings",
+    description="Comprehensive payload collection for web attacks",
+    tags=["payloads", "xss", "sqli", "reference"]
+)
+
+print(f"Found {init_result['stats']['total_files']} files")
+print(f"Categories: {init_result['stats']['categories']}")
+
+# 2. Extract all payloads
+strixdb_repo_extract_category(repo_slug="swisskyrepo_payloadsallthethings", category="payloads")
+
+# 3. Extract techniques
+strixdb_repo_extract_category(repo_slug="swisskyrepo_payloadsallthethings", category="techniques")
+
+# 4. Extract cheatsheets
+strixdb_repo_extract_category(repo_slug="swisskyrepo_payloadsallthethings", category="cheatsheets")
+
+# 5. Check status
+status = strixdb_repo_extract_status(repo_slug="swisskyrepo_payloadsallthethings")
+print(f"Extracted: {status['stats']['extracted']}/{status['stats']['total_files']}")
+
+# 6. Now use the content!
+results = strixdb_repo_search(query="jwt bypass")
+```
+
+**BUILD YOUR KNOWLEDGE BASE! EXTRACT EVERYTHING USEFUL!**
+</repository_extraction_system>

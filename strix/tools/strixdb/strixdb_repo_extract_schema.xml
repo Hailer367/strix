@@ -1,0 +1,306 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<tool_definitions>
+    <description>
+        StrixDB Repository Knowledge Extraction System
+        
+        Extract EVERYTHING valuable from repositories into StrixDB!
+        
+        USE CASE:
+        When you find a repository full of curated bug bounty resources, tools,
+        scripts, wordlists, techniques, PDFs, and other materials - extract
+        ALL that knowledge into StrixDB for permanent storage and future use.
+        
+        WORKFLOW:
+        1. strixdb_repo_extract_init() - Clone and scan the repository
+        2. Choose extraction method:
+           - strixdb_repo_extract_all() - Extract everything
+           - strixdb_repo_extract_category() - Extract by category
+           - strixdb_repo_extract_file() - Extract specific files
+        3. Use extracted content:
+           - strixdb_repo_search() - Search across extractions
+           - strixdb_repo_get_item() - Get specific items
+           - strixdb_repo_list_extracted() - Browse content
+        
+        CATEGORIES:
+        - tools: CLI tools and utilities
+        - scripts: Automation scripts (Python, Bash, etc.)
+        - wordlists: Fuzzing wordlists and dictionaries
+        - payloads: Attack payloads (XSS, SQLi, etc.)
+        - exploits: PoC exploits
+        - documentation: Guides, READMEs, wikis
+        - techniques: Attack techniques and methodologies
+        - references: Links and sources
+        - templates: Report and code templates
+        - cheatsheets: Quick reference sheets
+        - configs: Configuration files
+    </description>
+
+    <tool name="strixdb_repo_extract_init">
+        <description>
+            Initialize a repository extraction session.
+            
+            Clones the repository locally and scans all files to categorize them.
+            Use this when you find a repository with valuable resources!
+            
+            After initialization, use the extraction functions to save content.
+        </description>
+        <parameters>
+            <parameter name="repo_url" type="string" required="true">
+                Git repository URL (HTTPS or SSH)
+                Examples:
+                - https://github.com/owner/awesome-bugbounty
+                - git@github.com:owner/security-tools.git
+            </parameter>
+            <parameter name="description" type="string" required="false">
+                Description of what this repository contains
+            </parameter>
+            <parameter name="tags" type="array" required="false">
+                Tags for categorization (e.g., ["bugbounty", "wordlists", "tools"])
+            </parameter>
+            <parameter name="clone_depth" type="integer" required="false">
+                Git clone depth (1 for shallow/fast, 0 for full history). Default: 1
+            </parameter>
+        </parameters>
+        <returns>
+            Dictionary with extraction session info, file manifest, and category breakdown
+        </returns>
+        <example>
+            Extract a bug bounty resources repository:
+            strixdb_repo_extract_init(
+                repo_url="https://github.com/snoopysecurity/awesome-bugbounty-tools",
+                description="Curated list of bug bounty tools and resources",
+                tags=["bugbounty", "tools", "resources"]
+            )
+        </example>
+    </tool>
+
+    <tool name="strixdb_repo_extract_file">
+        <description>
+            Extract a specific file from a cloned repository into StrixDB.
+            
+            Reads the file and saves it with full metadata to the appropriate
+            category. Use when you want to selectively extract specific files.
+        </description>
+        <parameters>
+            <parameter name="repo_slug" type="string" required="true">
+                Repository slug from strixdb_repo_extract_init
+            </parameter>
+            <parameter name="file_path" type="string" required="true">
+                Relative path to the file within the repo
+            </parameter>
+            <parameter name="custom_category" type="string" required="false">
+                Override the auto-detected category
+            </parameter>
+            <parameter name="custom_name" type="string" required="false">
+                Custom name for the item in StrixDB
+            </parameter>
+            <parameter name="custom_description" type="string" required="false">
+                Description of the file/content
+            </parameter>
+            <parameter name="custom_tags" type="array" required="false">
+                Additional tags for categorization
+            </parameter>
+        </parameters>
+        <returns>
+            Dictionary with extraction result and content preview
+        </returns>
+        <example>
+            Extract a specific wordlist:
+            strixdb_repo_extract_file(
+                repo_slug="snoopysecurity_awesome-bugbounty-tools",
+                file_path="wordlists/common-api-endpoints.txt",
+                custom_description="Common API endpoint paths for fuzzing",
+                custom_tags=["api", "fuzzing", "endpoints"]
+            )
+        </example>
+    </tool>
+
+    <tool name="strixdb_repo_extract_category">
+        <description>
+            Extract all files of a specific category from the repository.
+            
+            Batch extracts files that match the specified category.
+            Categories are auto-detected during init based on file type and path.
+        </description>
+        <parameters>
+            <parameter name="repo_slug" type="string" required="true">
+                Repository slug from strixdb_repo_extract_init
+            </parameter>
+            <parameter name="category" type="string" required="true">
+                Category to extract: tools, scripts, wordlists, payloads, 
+                exploits, documentation, techniques, references, templates, 
+                cheatsheets, configs
+            </parameter>
+            <parameter name="max_files" type="integer" required="false">
+                Maximum number of files to extract (default: 100)
+            </parameter>
+            <parameter name="max_file_size_kb" type="integer" required="false">
+                Skip files larger than this (default: 500KB)
+            </parameter>
+            <parameter name="include_extensions" type="array" required="false">
+                Only include these file extensions
+            </parameter>
+            <parameter name="exclude_extensions" type="array" required="false">
+                Exclude these file extensions
+            </parameter>
+        </parameters>
+        <returns>
+            Dictionary with extraction results for the category
+        </returns>
+        <example>
+            Extract all wordlists:
+            strixdb_repo_extract_category(
+                repo_slug="snoopysecurity_awesome-bugbounty-tools",
+                category="wordlists",
+                max_files=200,
+                include_extensions=[".txt", ".lst"]
+            )
+        </example>
+    </tool>
+
+    <tool name="strixdb_repo_extract_all">
+        <description>
+            Extract ALL files from a cloned repository into StrixDB.
+            
+            Comprehensively extracts all valuable content organized by category.
+            Use this when you want to capture EVERYTHING from a repository.
+        </description>
+        <parameters>
+            <parameter name="repo_slug" type="string" required="true">
+                Repository slug from strixdb_repo_extract_init
+            </parameter>
+            <parameter name="max_files_per_category" type="integer" required="false">
+                Max files to extract per category (default: 50)
+            </parameter>
+            <parameter name="max_file_size_kb" type="integer" required="false">
+                Skip files larger than this (default: 500KB)
+            </parameter>
+            <parameter name="categories" type="array" required="false">
+                Only extract these categories (default: all)
+            </parameter>
+            <parameter name="skip_categories" type="array" required="false">
+                Skip these categories
+            </parameter>
+        </parameters>
+        <returns>
+            Dictionary with comprehensive extraction results
+        </returns>
+        <example>
+            Extract everything except documentation:
+            strixdb_repo_extract_all(
+                repo_slug="snoopysecurity_awesome-bugbounty-tools",
+                max_files_per_category=100,
+                skip_categories=["documentation"]
+            )
+        </example>
+    </tool>
+
+    <tool name="strixdb_repo_extract_status">
+        <description>
+            Get the extraction status for a repository.
+            
+            Shows what has been extracted, what's pending, and statistics.
+        </description>
+        <parameters>
+            <parameter name="repo_slug" type="string" required="true">
+                Repository slug
+            </parameter>
+        </parameters>
+        <returns>
+            Dictionary with extraction status and statistics
+        </returns>
+    </tool>
+
+    <tool name="strixdb_repo_list_extracted">
+        <description>
+            List extracted files from a repository.
+            
+            Browse what has been extracted and stored in StrixDB.
+        </description>
+        <parameters>
+            <parameter name="repo_slug" type="string" required="true">
+                Repository slug
+            </parameter>
+            <parameter name="category" type="string" required="false">
+                Filter by category (optional)
+            </parameter>
+            <parameter name="limit" type="integer" required="false">
+                Maximum items to return (default: 50)
+            </parameter>
+        </parameters>
+        <returns>
+            Dictionary with list of extracted items
+        </returns>
+    </tool>
+
+    <tool name="strixdb_repo_get_item">
+        <description>
+            Get a specific extracted item from a repository.
+            
+            Retrieve the full content of an extracted file.
+        </description>
+        <parameters>
+            <parameter name="repo_slug" type="string" required="true">
+                Repository slug
+            </parameter>
+            <parameter name="category" type="string" required="true">
+                Item category
+            </parameter>
+            <parameter name="item_name" type="string" required="true">
+                Item name (without extension)
+            </parameter>
+        </parameters>
+        <returns>
+            Dictionary with item content and metadata
+        </returns>
+    </tool>
+
+    <tool name="strixdb_repo_search">
+        <description>
+            Search across extracted repository content.
+            
+            Find files and content matching your query across all or specific
+            extracted repositories.
+        </description>
+        <parameters>
+            <parameter name="query" type="string" required="true">
+                Search query
+            </parameter>
+            <parameter name="repo_slug" type="string" required="false">
+                Limit to specific repo (optional)
+            </parameter>
+            <parameter name="category" type="string" required="false">
+                Limit to specific category (optional)
+            </parameter>
+            <parameter name="limit" type="integer" required="false">
+                Maximum results (default: 20)
+            </parameter>
+        </parameters>
+        <returns>
+            Dictionary with search results
+        </returns>
+        <example>
+            Search for SQLi payloads:
+            strixdb_repo_search(
+                query="sql injection bypass",
+                category="payloads"
+            )
+        </example>
+    </tool>
+
+    <tool name="strixdb_repo_list">
+        <description>
+            List all extracted repositories in StrixDB.
+            
+            Get an overview of all repositories that have been extracted.
+        </description>
+        <parameters>
+            <parameter name="limit" type="integer" required="false">
+                Maximum repositories to return (default: 50)
+            </parameter>
+        </parameters>
+        <returns>
+            Dictionary with list of extracted repositories
+        </returns>
+    </tool>
+</tool_definitions>

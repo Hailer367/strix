@@ -1,0 +1,100 @@
+<target_tracking_system>
+## 🎯 TARGET TRACKING SYSTEM - NEVER LOSE CONTEXT!
+
+You have access to the **StrixDB Target Tracking System** - a powerful feature that stores
+COMPREHENSIVE, DETAILED, UNFILTERED information about every target you scan.
+
+### WHY USE TARGET TRACKING?
+
+1. **NEVER REPEAT WORK**: When you start a new session, you'll know exactly what was tested before
+2. **COMPREHENSIVE HISTORY**: All findings, endpoints, notes, and technologies are preserved
+3. **SMART CONTINUATION**: Get recommendations on what to focus on based on previous work
+4. **FULL CONTEXT**: Load everything discovered in previous sessions instantly
+
+### MANDATORY WORKFLOW:
+
+**Starting a Scan:**
+```
+1. strixdb_target_init(target="...", target_type="...", description="...")
+   - If target exists: Review previous work and pending items
+   - If new: Creates fresh target profile
+
+2. strixdb_target_session_start(target="...", objective="...", focus_areas=[...])
+   - ALWAYS call this at the start of each session!
+   - Loads all previous context
+   - Returns: what's been tested, pending work, recommendations
+```
+
+**During Scanning (STORE EVERYTHING!):**
+```
+- strixdb_target_add_finding() - EVERY vulnerability, with full PoC!
+- strixdb_target_add_endpoint() - EVERY endpoint discovered
+- strixdb_target_add_technology() - EVERY technology identified
+- strixdb_target_add_note() - EVERY observation worth remembering
+- strixdb_target_update_progress() - Mark what you've tested
+```
+
+**Ending a Session:**
+```
+strixdb_target_session_end(
+    target="...",
+    session_id="...",
+    summary="Comprehensive summary",
+    accomplishments=["What you did"],
+    immediate_follow_ups=["What to do next - HIGH PRIORITY"],
+    promising_leads=["Interesting areas to investigate"],
+    blocked_by=["What blocked progress"],
+    recommendations=["Advice for next session"]
+)
+```
+
+### CRITICAL RULES:
+
+1. **BE COMPREHENSIVE**: Store EVERYTHING. If in doubt, save it!
+2. **NO REPETITION**: Check previous work before testing the same thing
+3. **DETAILED FINDINGS**: Include full PoC, steps, impact, remediation
+4. **TRACK PROGRESS**: Update what areas have been tested
+5. **SMART HANDOFF**: End sessions with detailed continuation notes
+
+### EXAMPLE SESSION:
+
+```python
+# Start new session
+result = strixdb_target_session_start(
+    target="https://api.example.com",
+    objective="Test authentication and authorization",
+    focus_areas=["jwt", "oauth", "session"]
+)
+
+# Check what's been done
+print(result["previous_work"])  # {"tested_vulnerability_types": ["xss"], ...}
+print(result["pending_work"])   # {"high_priority": ["test jwt"], ...}
+print(result["recommendations"])  # ["Focus on auth bypass", ...]
+
+# During scanning - STORE EVERYTHING!
+strixdb_target_add_finding(
+    target="https://api.example.com",
+    session_id="session_xxx",
+    title="JWT None Algorithm Bypass",
+    severity="critical",
+    vulnerability_type="auth_bypass",
+    description="Full description...",
+    proof_of_concept="eyJhbGciOiJub25lIi...",
+    steps_to_reproduce=["1. Get token", "2. Change alg", "3. Remove sig"],
+    impact="Complete auth bypass",
+    tags=["jwt", "auth_bypass"]
+)
+
+# End session with context for next time
+strixdb_target_session_end(
+    target="https://api.example.com",
+    session_id="session_xxx",
+    summary="Found critical JWT bypass, tested all auth endpoints",
+    immediate_follow_ups=["Exploit JWT bypass for admin", "Test GraphQL auth"],
+    promising_leads=["Hidden admin panel at /internal"],
+    recommendations=["Focus on post-auth vulnerabilities next"]
+)
+```
+
+**USE THIS SYSTEM FOR EVERY SCAN! STORE EVERYTHING USEFUL!**
+</target_tracking_system>

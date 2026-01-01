@@ -47,6 +47,8 @@
 > - 🔑 **CLIProxyAPI Support**: Use API_ENDPOINT instead of API_KEY - no API keys needed!
 > - 📊 **Live Dashboard**: Real-time vulnerability disclosure and API call counter
 > - 🔄 **Continuous Scanning**: Workflow continues until timeframe exhausted (doesn't stop on first vuln)
+> - 🎯 **Target Tracking System**: Comprehensive per-target tracking across sessions - never repeat work!
+> - 📚 **Repository Extraction**: Clone repos and extract ALL tools, wordlists, payloads into StrixDB
 
 ---
 
@@ -110,6 +112,87 @@ The agent acts as an **enthusiastic collector**, automatically storing anything 
 - `methods` - Attack methodologies
 - `tools` - Custom security tools
 - `configs` - Configuration files and templates
+
+### 🎯 Target Tracking System (NEW!)
+
+**Never repeat unnecessary work across scanning sessions!**
+
+StrixDB now includes a comprehensive **Target Tracking System** that stores EVERYTHING discovered about each target:
+
+- **Session Continuity**: Start where you left off - all previous work is loaded automatically
+- **Finding History**: Complete vulnerability records with full PoCs and details
+- **Endpoint Mapping**: All discovered endpoints tracked with test status
+- **Technology Stack**: Identified technologies and versions
+- **Progress Tracking**: What has been tested, what's pending, what's blocked
+
+```python
+# Start scanning a target
+strixdb_target_init(target="https://api.example.com", target_type="api")
+
+# Begin a session - loads all previous context!
+session = strixdb_target_session_start(
+    target="https://api.example.com",
+    objective="Test authentication endpoints"
+)
+# Returns: previous findings, tested areas, recommendations
+
+# During scanning - store EVERYTHING
+strixdb_target_add_finding(
+    target="...", session_id="...",
+    title="SQL Injection in Login",
+    severity="critical", vulnerability_type="sqli",
+    proof_of_concept="' OR '1'='1'--"
+)
+
+strixdb_target_add_endpoint(target="...", session_id="...", 
+    endpoint="/api/users", method="POST", vulnerable=True)
+
+# End session with notes for next time
+strixdb_target_session_end(
+    target="...", session_id="...",
+    summary="Found critical SQLi, tested all auth endpoints",
+    immediate_follow_ups=["Exploit SQLi for data extraction"]
+)
+```
+
+### 📚 Repository Knowledge Extraction (NEW!)
+
+**Clone bug bounty resource repos and extract ALL the knowledge!**
+
+When you find a repository full of curated tools, wordlists, payloads, and techniques - extract everything into StrixDB:
+
+```python
+# Clone and analyze a repository
+result = strixdb_repo_extract_init(
+    repo_url="https://github.com/swisskyrepo/PayloadsAllTheThings",
+    description="Comprehensive payload collection",
+    tags=["payloads", "xss", "sqli"]
+)
+# Shows: total files, categories found (scripts, wordlists, payloads, etc.)
+
+# Extract everything
+strixdb_repo_extract_all(repo_slug="swisskyrepo_payloadsallthethings")
+
+# Or extract by category
+strixdb_repo_extract_category(repo_slug="...", category="payloads")
+strixdb_repo_extract_category(repo_slug="...", category="wordlists")
+
+# Search across all extracted content
+strixdb_repo_search(query="jwt bypass")
+
+# List all extracted repos
+strixdb_repo_list()
+```
+
+**Categories auto-detected:**
+- `tools` - CLI tools, utilities
+- `scripts` - Python, Bash automation
+- `wordlists` - Fuzzing wordlists
+- `payloads` - XSS, SQLi payloads
+- `exploits` - PoC exploits
+- `documentation` - Guides, READMEs
+- `techniques` - Attack methodologies
+- `cheatsheets` - Quick references
 
 ### ⚙️ GitHub Actions Integration (NEW!)
 
@@ -762,10 +845,14 @@ request_help(
 
 ## 📁 All Modules and Files
 
-### StrixDB Module (`strix/tools/strixdb/`) **NEW!**
+### StrixDB Module (`strix/tools/strixdb/`) **ENHANCED!**
 - `__init__.py` - Module exports
 - `strixdb_actions.py` - StrixDB GitHub repository operations
-- `strixdb_actions_schema.xml` - XML schema for tools
+- `strixdb_actions_schema.xml` - XML schema for core tools
+- `strixdb_targets.py` - **NEW!** Target tracking system
+- `strixdb_targets_schema.xml` - **NEW!** XML schema for target tools
+- `strixdb_repo_extract.py` - **NEW!** Repository knowledge extraction
+- `strixdb_repo_extract_schema.xml` - **NEW!** XML schema for extraction tools
 
 ### Root Terminal Module (`strix/tools/root_terminal/`)
 - `__init__.py` - Module exports
@@ -807,11 +894,14 @@ request_help(
 ### Prompt Modules (`strix/prompts/`)
 - `vulnerabilities/cve_hunting.jinja` - CVE hunting guidance
 - `coordination/multi_agent_collaboration.jinja` - Collaboration protocol guide
+- `capabilities/target_tracking.jinja` - **NEW!** Target tracking guidance
+- `capabilities/repo_extraction.jinja` - **NEW!** Repository extraction guidance
 
 ### Test Suite (`tests/`)
 - `test_cve_database.py` - 200+ test assertions for CVE module
 - `test_collaboration.py` - 200+ test assertions for collaboration module
-- `test_strixdb.py` - Tests for StrixDB module (NEW!)
+- `test_strixdb_targets.py` - **NEW!** Tests for target tracking system
+- `test_strixdb_repo_extract.py` - **NEW!** Tests for repository extraction system
 
 ### Modified Files
 - `strix/tools/__init__.py` - Updated to include all new modules
