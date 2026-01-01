@@ -9,6 +9,8 @@ This document contains GitHub Actions workflow configurations for running Strix 
 > - **Multi-Action Mode**: AI can do up to 7 actions per API call for efficiency
 > - **Active Commander**: Main agent now actively participates in security testing (not just coordination)
 > - **Custom Strix Install**: Installs from Hailer367/strix repository (enhanced version)
+> - **🎯 Target Tracking System**: Comprehensive per-target tracking across sessions - never repeat unnecessary work!
+> - **📚 Repository Extraction**: Clone bug bounty resource repos and extract ALL tools, wordlists, payloads into StrixDB
 
 ---
 
@@ -22,6 +24,8 @@ This document contains GitHub Actions workflow configurations for running Strix 
 6. [Manual Penetration Test](#manual-penetration-test) - On-demand deep scans
 7. [StrixDB Sync Workflow](#strixdb-sync-workflow) - Sync artifacts to StrixDB
 8. [New Features Guide](#new-features-guide) - Multi-action, Active Commander, Live Dashboard
+9. [Target Tracking System](#target-tracking-system) - **NEW!** Cross-session target management
+10. [Repository Extraction](#repository-extraction) - **NEW!** Clone and extract bug bounty resources
 
 ---
 
@@ -895,5 +899,150 @@ Use multi-action mode for efficiency. Save useful exploits to StrixDB.
 
 ---
 
-*Last updated: December 2024*
-*Version: Enhanced Edition with CLIProxyAPI, Multi-Action, and Active Commander*
+---
+
+## Target Tracking System
+
+### 🎯 Overview
+
+The **Target Tracking System** stores COMPREHENSIVE, DETAILED information about every target scanned. This enables:
+
+- **Session Continuity**: Resume scanning without repeating work
+- **Finding Preservation**: All vulnerabilities stored with full PoCs
+- **Endpoint Mapping**: Complete API/URL mapping across sessions
+- **Progress Tracking**: Know exactly what has been tested
+
+### Target Data Structure
+
+```
+StrixDB/targets/{target_slug}/
+├── profile.json           # Target metadata and stats
+├── sessions/              # Individual session data
+│   └── session_*.json     # Session details and findings
+├── findings.json          # All vulnerability findings
+├── endpoints.json         # Discovered endpoints
+├── technologies.json      # Identified tech stack
+└── notes.json            # Observations and leads
+```
+
+### Usage in Workflows
+
+Add target tracking to your scan instruction:
+
+```yaml
+- name: Run Strix with Target Tracking
+  run: |
+    python -m strix.interface.cli -n \
+      -t "${{ github.event.inputs.target }}" \
+      --instruction "Use target tracking:
+        1. Initialize target with strixdb_target_init()
+        2. Start session with strixdb_target_session_start()
+        3. Store ALL findings with strixdb_target_add_finding()
+        4. Track endpoints with strixdb_target_add_endpoint()
+        5. End session with detailed continuation notes
+        This enables cross-session continuity!"
+```
+
+### Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `strixdb_target_init` | Initialize a new target for tracking |
+| `strixdb_target_session_start` | Start a session (loads all context!) |
+| `strixdb_target_session_end` | End session with continuation notes |
+| `strixdb_target_add_finding` | Record a vulnerability |
+| `strixdb_target_add_endpoint` | Track discovered endpoints |
+| `strixdb_target_add_note` | Add observations |
+| `strixdb_target_add_technology` | Record identified tech |
+| `strixdb_target_update_progress` | Track tested areas |
+| `strixdb_target_get` | Get full target data |
+| `strixdb_target_list` | List all tracked targets |
+
+---
+
+## Repository Extraction
+
+### 📚 Overview
+
+The **Repository Extraction System** allows you to clone bug bounty resource repositories and extract ALL valuable content into StrixDB:
+
+- Tools, scripts, and utilities
+- Wordlists and dictionaries
+- Payloads (XSS, SQLi, etc.)
+- Exploits and PoCs
+- Techniques and methodologies
+- Documentation and cheatsheets
+
+### Use Case: Building a Knowledge Base
+
+When you find a curated repository like `swisskyrepo/PayloadsAllTheThings` or `snoopysecurity/awesome-bugbounty-tools`, extract everything:
+
+```python
+# 1. Clone and scan the repository
+result = strixdb_repo_extract_init(
+    repo_url="https://github.com/swisskyrepo/PayloadsAllTheThings",
+    description="Comprehensive payload collection",
+    tags=["payloads", "xss", "sqli", "reference"]
+)
+
+# 2. Extract all content by category
+strixdb_repo_extract_category(repo_slug="swisskyrepo_payloadsallthethings", category="payloads")
+strixdb_repo_extract_category(repo_slug="swisskyrepo_payloadsallthethings", category="techniques")
+
+# Or extract EVERYTHING
+strixdb_repo_extract_all(repo_slug="swisskyrepo_payloadsallthethings")
+
+# 3. Later, search and use the content
+results = strixdb_repo_search(query="jwt bypass")
+```
+
+### Categories Auto-Detected
+
+| Category | Content Type | Extensions |
+|----------|--------------|------------|
+| `scripts` | Python, Bash scripts | .py, .sh |
+| `tools` | CLI tools | .go, .rs |
+| `wordlists` | Fuzzing dictionaries | .txt, .lst |
+| `payloads` | Attack payloads | (path-based) |
+| `exploits` | PoC exploits | (path-based) |
+| `documentation` | Guides, READMEs | .md, .html |
+| `techniques` | Attack methods | (path-based) |
+| `cheatsheets` | Quick references | (path-based) |
+| `configs` | Configuration files | .yml, .json |
+
+### Data Extraction Workflow
+
+```yaml
+# Example: Extract resources from a bug bounty repo
+- name: Extract Bug Bounty Resources
+  run: |
+    python -m strix.interface.cli -n \
+      -t "data-extraction-session" \
+      --instruction "
+        Use the Repository Extraction System:
+        1. strixdb_repo_extract_init('https://github.com/snoopysecurity/awesome-bugbounty-tools', 
+           description='Curated bug bounty tools', tags=['bugbounty'])
+        2. strixdb_repo_extract_all() to extract everything
+        3. Report extraction status with strixdb_repo_extract_status()
+        
+        This builds a permanent knowledge base for future scans!"
+```
+
+### Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `strixdb_repo_extract_init` | Clone and scan a repository |
+| `strixdb_repo_extract_file` | Extract specific file |
+| `strixdb_repo_extract_category` | Extract all files of a category |
+| `strixdb_repo_extract_all` | Extract everything |
+| `strixdb_repo_extract_status` | Check extraction progress |
+| `strixdb_repo_list_extracted` | Browse extracted content |
+| `strixdb_repo_get_item` | Get specific extracted item |
+| `strixdb_repo_search` | Search across extractions |
+| `strixdb_repo_list` | List all extracted repos |
+
+---
+
+*Last updated: January 2025*
+*Version: Enhanced Edition with CLIProxyAPI, Multi-Action, Active Commander, Target Tracking, and Repository Extraction*
