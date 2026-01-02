@@ -36,13 +36,34 @@ jobs:
         LATEST_RELEASE=$(curl -s https://api.github.com/repos/router-for-me/CLIProxyAPI/releases/latest | grep "tag_name" | cut -d '"' -f 4)
         echo "Downloading CLIProxyAPI version: $LATEST_RELEASE"
         
-        # Download for Linux amd64
-        wget -O cliproxyapi.tar.gz "https://github.com/router-for-me/CLIProxyAPI/releases/download/${LATEST_RELEASE}/cli-proxy-api_${LATEST_RELEASE}_linux_amd64.tar.gz"
+        # Download for Linux amd64 with correct filename pattern
+        wget -O cliproxyapi.tar.gz "https://github.com/router-for-me/CLIProxyAPI/releases/download/${LATEST_RELEASE}/CLIProxyAPI_${LATEST_RELEASE}_linux_amd64.tar.gz"
         tar -xzf cliproxyapi.tar.gz
-        chmod +x cli-proxy-api
         
-        # Verify the binary
-        ./cli-proxy-api --version || echo "Version check failed, but continuing..."
+        # The extracted binary might be named differently, let's find it
+        BINARY_NAME=$(find . -name "CLIProxyAPI*" -type f -executable | head -n 1)
+        if [ -z "$BINARY_NAME" ]; then
+          # Fallback: look for common binary names
+          BINARY_NAME=$(find . -name "cliproxyapi*" -type f -executable | head -n 1)
+          if [ -z "$BINARY_NAME" ]; then
+            BINARY_NAME=$(find . -name "*proxy*" -type f -executable | head -n 1)
+          fi
+        fi
+        
+        if [ -n "$BINARY_NAME" ]; then
+          # Create a symlink with consistent name
+          ln -sf "$BINARY_NAME" cli-proxy-api
+          chmod +x cli-proxy-api
+          echo "Found and linked binary: $BINARY_NAME -> cli-proxy-api"
+          
+          # Verify the binary
+          ./cli-proxy-api --version || echo "Version check failed, but continuing..."
+        else
+          echo "ERROR: Could not find CLIProxyAPI binary in extracted files"
+          echo "Contents of current directory:"
+          ls -la
+          exit 1
+        fi
 
     - name: Create authentication directory
       run: |
