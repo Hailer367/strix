@@ -51,23 +51,20 @@ jobs:
         run: |
           mkdir -p ~/.cli-proxy-api
           mkdir -p ./auth-urls
+          echo "Auth directory created at: $(readlink -f ~/.cli-proxy-api)"
 
       - name: Create server configuration
         run: |
-          cat > config.yaml << 'EOF'
-          server:
-            port: 8080
-            host: "0.0.0.0"
+          AUTH_DIR=$(readlink -f ~/.cli-proxy-api)
           
-          providers:
-            qwen:
-              enabled: true
-          
-          logging:
-            level: "info"
+          cat > config.yaml << EOF
+          port: 8080
+          auth-dir: "$AUTH_DIR"
+          debug: false
           EOF
           
-          echo "Configuration created"
+          echo "Configuration created:"
+          cat config.yaml
 
       - name: Start authentication server and generate login URLs
         run: |
