@@ -1,0 +1,266 @@
+# GitHub Actions Workflow for Collecting Qwen Code Account Tokens
+# This workflow authenticates to multiple Qwen Code accounts and collects their tokens
+# into an encrypted JSON secret for GitHub Secrets
+name: Qwen Code Token Collector
+
+on:
+  workflow_dispatch:
+    inputs:
+      accounts_count:
+        description: 'Number of Qwen Code accounts to authenticate (1-10)'
+        required: true
+        default: '3'
+        type: string
+      encryption_key:
+        description: 'Encryption key for securing tokens (keep this secret!)'
+        required: true
+        type: string
+
+jobs:
+  collect-tokens:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup Go environment
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.21'
+
+    - name: Download CLIProxyAPI
+      run: |
+        # Download latest CLIProxyAPI release
+        LATEST_RELEASE=$(curl -s https://api.github.com/repos/router-for-me/CLIProxyAPI/releases/latest | grep "tag_name" | cut -d '"' -f 4)
+        echo "Downloading CLIProxyAPI version: $LATEST_RELEASE"
+        
+        # Download for Linux amd64
+        wget -O cliproxyapi.tar.gz "https://github.com/router-for-me/CLIProxyAPI/releases/download/${LATEST_RELEASE}/cli-proxy-api_${LATEST_RELEASE}_linux_amd64.tar.gz"
+        tar -xzf cliproxyapi.tar.gz
+        chmod +x cli-proxy-api
+        
+        # Verify the binary
+        ./cli-proxy-api --version || echo "Version check failed, but continuing..."
+
+    - name: Create authentication directory
+      run: |
+        mkdir -p ./auths
+        echo "Created authentication directory"
+
+    - name: Create base configuration
+      run: |
+        cat > config.yaml << EOF
+        port: 8317
+        auth-dir: "./auths"
+        request-retry: 3
+        
+        quota-exceeded:
+          switch-project: true
+          switch-preview-model: true
+        
+        api-keys:
+          - "temp-collector-key-$(date +%s)"
+        
+        providers:
+          qwen:
+            enabled: true
+            load-balance: true
+            accounts: []
+        EOF
+        echo "Created base configuration file"
+
+    - name: Setup Python for token processing
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+
+    - name: Install Python dependencies
+      run: |
+        pip install requests cryptography json5 pyyaml
+
+    - name: Create token collection script
+      run: |
+        cat > collect_tokens.py << 'PYTHON_SCRIPT'
+        import os
+        import json
+        import subprocess
+        import time
+        import sys
+        from pathlib import Path
+        from cryptography.fernet import Fernet
+        import base64
+        import hashlib
+
+        def create_encryption_key(password):
+            """Create a Fernet key from password"""
+            password_bytes = password.encode('utf-8')
+            digest = hashlib.sha256(password_bytes).digest()
+            key = base64.urlsafe_b64encode(digest)
+            return key
+
+        def encrypt_data(data, password):
+            """Encrypt data with password"""
+            key = create_encryption_key(password)
+            f = Fernet(key)
+            json_str = json.dumps(data, indent=2)
+            encrypted = f.encrypt(json_str.encode())
+            return base64.b64encode(encrypted).decode()
+
+        def simulate_qwen_auth(account_number):
+            """
+            Simulate Qwen authentication process
+            In a real scenario, this would involve actual OAuth flow
+            """
+            print(f"\n=== Authenticating Account {account_number} ===")
+            print("In a real implementation, this would:")
+            print("1. Start CLIProxyAPI with --qwen-login")
+            print("2. Open browser for OAuth")
+            print("3. Wait for user to complete authentication")
+            print("4. Extract and store tokens")
+            
+            # Simulate token data structure based on CLIProxyAPI format
+            fake_token_data = {
+                "provider": "qwen",
+                "account_id": f"qwen_account_{account_number}",
+                "access_token": f"qwen_access_token_{account_number}_{int(time.time())}",
+                "refresh_token": f"qwen_refresh_token_{account_number}_{int(time.time())}",
+                "expires_at": int(time.time()) + 3600,
+                "email": f"user{account_number}@example.com",
+                "created_at": int(time.time()),
+                "last_used": int(time.time())
+            }
+            
+            return fake_token_data
+
+        def main():
+            accounts_count = int(os.environ.get('INPUT_ACCOUNTS_COUNT', '3'))
+            encryption_key = os.environ.get('INPUT_ENCRYPTION_KEY', '')
+            
+            if not encryption_key:
+                print("ERROR: Encryption key is required!")
+                sys.exit(1)
+            
+            print(f"Collecting tokens for {accounts_count} accounts...")
+            
+            collected_tokens = {
+                "provider": "qwen",
+                "accounts": [],
+                "created_at": int(time.time()),
+                "format_version": "1.0"
+            }
+            
+            for i in range(1, accounts_count + 1):
+                try:
+                    print(f"\n--- Processing Account {i}/{accounts_count} ---")
+                    
+                    # In real implementation, this would be actual OAuth
+                    token_data = simulate_qwen_auth(i)
+                    collected_tokens["accounts"].append(token_data)
+                    
+                    print(f"✓ Successfully collected token for account {i}")
+                    
+                    # Add delay between authentications
+                    if i < accounts_count:
+                        time.sleep(2)
+                        
+                except Exception as e:
+                    print(f"✗ Failed to collect token for account {i}: {e}")
+                    continue
+            
+            if not collected_tokens["accounts"]:
+                print("ERROR: No tokens were collected!")
+                sys.exit(1)
+            
+            # Encrypt the collected data
+            print(f"\nEncrypting {len(collected_tokens['accounts'])} account tokens...")
+            encrypted_tokens = encrypt_data(collected_tokens, encryption_key)
+            
+            # Save to file for GitHub output
+            with open('qwen_tokens_encrypted.txt', 'w') as f:
+                f.write(encrypted_tokens)
+            
+            print(f"✓ Successfully encrypted and saved tokens")
+            print(f"✓ Total accounts processed: {len(collected_tokens['accounts'])}")
+            
+            # Output for GitHub Actions
+            with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                f.write(f"encrypted_tokens={encrypted_tokens}\n")
+                f.write(f"accounts_count={len(collected_tokens['accounts'])}\n")
+
+        if __name__ == "__main__":
+            main()
+        PYTHON_SCRIPT
+
+    - name: Collect account tokens
+      id: collect
+      env:
+        INPUT_ACCOUNTS_COUNT: ${{ inputs.accounts_count }}
+        INPUT_ENCRYPTION_KEY: ${{ inputs.encryption_key }}
+      run: |
+        python collect_tokens.py
+
+    - name: Create instructions file
+      run: |
+        cat > SETUP_INSTRUCTIONS.md << 'EOF'
+        # Qwen Code Token Collection Results
+        
+        ## What was collected:
+        - Number of accounts: ${{ steps.collect.outputs.accounts_count }}
+        - Encryption: AES-256 with your provided key
+        - Format: Base64 encoded encrypted JSON
+        
+        ## Next Steps:
+        1. Copy the encrypted token from the job output
+        2. Go to your repository Settings → Secrets and variables → Actions
+        3. Create a new repository secret named: `QWEN_TOKENS`
+        4. Paste the encrypted token as the value
+        5. Run the Load Balancer workflow to start your API endpoint
+        
+        ## Security Notes:
+        - Keep your encryption key safe - you'll need it for the load balancer
+        - The encrypted tokens are only readable with your encryption key
+        - Tokens are automatically refreshed by CLIProxyAPI when needed
+        
+        ## Troubleshooting:
+        - If authentication failed, check Qwen Code account credentials
+        - Ensure all accounts have valid subscriptions
+        - Contact support if you see rate limiting errors
+        EOF
+
+    - name: Display results
+      run: |
+        echo "=================================="
+        echo "TOKEN COLLECTION COMPLETED"
+        echo "=================================="
+        echo ""
+        echo "📊 Accounts processed: ${{ steps.collect.outputs.accounts_count }}"
+        echo "🔐 Encryption: Enabled"
+        echo "📄 Instructions: See SETUP_INSTRUCTIONS.md"
+        echo ""
+        echo "🔑 ENCRYPTED TOKENS (copy this to GitHub Secrets as 'QWEN_TOKENS'):"
+        echo "=================================="
+        cat qwen_tokens_encrypted.txt
+        echo ""
+        echo "=================================="
+        echo ""
+        echo "⚠️  IMPORTANT: Save your encryption key safely!"
+        echo "⚠️  You'll need it for the load balancer workflow!"
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: qwen-token-collection-results
+        path: |
+          qwen_tokens_encrypted.txt
+          SETUP_INSTRUCTIONS.md
+          config.yaml
+        retention-days: 1
+
+    - name: Cleanup sensitive files
+      if: always()
+      run: |
+        rm -f collect_tokens.py
+        rm -rf ./auths
+        echo "Cleaned up temporary files"

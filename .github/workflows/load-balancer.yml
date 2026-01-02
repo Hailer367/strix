@@ -1,0 +1,405 @@
+# GitHub Actions Workflow for CLIProxyAPI Load Balancer
+# This workflow runs CLIProxyAPI with multiple Qwen Code accounts for load balancing
+name: CLIProxyAPI Load Balancer
+
+on:
+  workflow_dispatch:
+    inputs:
+      encryption_key:
+        description: 'Encryption key used to decrypt Qwen tokens'
+        required: true
+        type: string
+      api_port:
+        description: 'Port for the API endpoint (default: 8317)'
+        required: false
+        default: '8317'
+        type: string
+      custom_api_key:
+        description: 'Custom API key for client access (optional - will generate if empty)'
+        required: false
+        type: string
+  # Uncomment to run automatically on schedule
+  # schedule:
+  #   - cron: '0 */6 * * *'  # Restart every 6 hours
+
+jobs:
+  start-load-balancer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6 hours max runtime
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup Go environment
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.21'
+
+    - name: Setup Python for token decryption
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+
+    - name: Install Python dependencies
+      run: |
+        pip install cryptography json5 pyyaml requests
+
+    - name: Download CLIProxyAPI
+      run: |
+        # Download latest CLIProxyAPI release
+        LATEST_RELEASE=$(curl -s https://api.github.com/repos/router-for-me/CLIProxyAPI/releases/latest | grep "tag_name" | cut -d '"' -f 4)
+        echo "Downloading CLIProxyAPI version: $LATEST_RELEASE"
+        
+        # Download for Linux amd64
+        wget -O cliproxyapi.tar.gz "https://github.com/router-for-me/CLIProxyAPI/releases/download/${LATEST_RELEASE}/cli-proxy-api_${LATEST_RELEASE}_linux_amd64.tar.gz"
+        tar -xzf cliproxyapi.tar.gz
+        chmod +x cli-proxy-api
+        
+        # Verify the binary
+        ./cli-proxy-api --version || echo "Version check completed"
+
+    - name: Create token decryption script
+      run: |
+        cat > decrypt_tokens.py << 'PYTHON_SCRIPT'
+        import os
+        import json
+        import base64
+        import hashlib
+        import sys
+        from cryptography.fernet import Fernet
+        import yaml
+
+        def create_encryption_key(password):
+            """Create a Fernet key from password"""
+            password_bytes = password.encode('utf-8')
+            digest = hashlib.sha256(password_bytes).digest()
+            key = base64.urlsafe_b64encode(digest)
+            return key
+
+        def decrypt_data(encrypted_data, password):
+            """Decrypt data with password"""
+            try:
+                key = create_encryption_key(password)
+                f = Fernet(key)
+                encrypted_bytes = base64.b64decode(encrypted_data.encode())
+                decrypted_bytes = f.decrypt(encrypted_bytes)
+                return json.loads(decrypted_bytes.decode())
+            except Exception as e:
+                print(f"ERROR: Failed to decrypt tokens: {e}")
+                sys.exit(1)
+
+        def create_auth_files(tokens_data):
+            """Create authentication files for CLIProxyAPI"""
+            os.makedirs('./auths', exist_ok=True)
+            
+            created_files = []
+            for i, account in enumerate(tokens_data['accounts']):
+                auth_filename = f"qwen_account_{i+1}.json"
+                auth_path = f"./auths/{auth_filename}"
+                
+                # Create auth file in CLIProxyAPI expected format
+                auth_data = {
+                    "provider": account["provider"],
+                    "account_id": account["account_id"],
+                    "email": account.get("email", f"account{i+1}@qwen.ai"),
+                    "access_token": account["access_token"],
+                    "refresh_token": account["refresh_token"],
+                    "expires_at": account["expires_at"],
+                    "created_at": account["created_at"],
+                    "last_used": account["last_used"]
+                }
+                
+                with open(auth_path, 'w') as f:
+                    json.dump(auth_data, f, indent=2)
+                
+                created_files.append(auth_filename)
+                print(f"✓ Created auth file: {auth_filename}")
+            
+            return created_files
+
+        def create_config_file(auth_files, api_port, api_key):
+            """Create CLIProxyAPI configuration file"""
+            config = {
+                'port': int(api_port),
+                'auth-dir': './auths',
+                'request-retry': 3,
+                'timeout': '120s',
+                'quota-exceeded': {
+                    'switch-project': True,
+                    'switch-preview-model': True
+                },
+                'api-keys': [api_key],
+                'providers': {
+                    'qwen': {
+                        'enabled': True,
+                        'load-balance': True,
+                        'round-robin': True,
+                        'retry-attempts': 2,
+                        'health-check': True,
+                        'accounts': []
+                    }
+                },
+                'logging': {
+                    'level': 'info',
+                    'file': './proxy.log'
+                },
+                'cors': {
+                    'enabled': True,
+                    'origins': ['*']
+                }
+            }
+            
+            # Add account references
+            for auth_file in auth_files:
+                account_name = auth_file.replace('.json', '')
+                config['providers']['qwen']['accounts'].append({
+                    'name': account_name,
+                    'auth-file': auth_file,
+                    'weight': 1,
+                    'enabled': True
+                })
+            
+            with open('config.yaml', 'w') as f:
+                yaml.dump(config, f, default_flow_style=False)
+            
+            print(f"✓ Created config.yaml with {len(auth_files)} accounts")
+            return config
+
+        def main():
+            encryption_key = os.environ.get('INPUT_ENCRYPTION_KEY', '')
+            encrypted_tokens = os.environ.get('QWEN_TOKENS', '')
+            api_port = os.environ.get('INPUT_API_PORT', '8317')
+            custom_api_key = os.environ.get('INPUT_CUSTOM_API_KEY', '')
+            
+            if not encryption_key:
+                print("ERROR: Encryption key is required!")
+                sys.exit(1)
+            
+            if not encrypted_tokens:
+                print("ERROR: QWEN_TOKENS secret not found!")
+                sys.exit(1)
+            
+            print("Decrypting Qwen tokens...")
+            tokens_data = decrypt_data(encrypted_tokens, encryption_key)
+            
+            print(f"✓ Successfully decrypted {len(tokens_data['accounts'])} account tokens")
+            
+            # Create authentication files
+            auth_files = create_auth_files(tokens_data)
+            
+            # Generate API key if not provided
+            if not custom_api_key:
+                import secrets
+                custom_api_key = f"qwen-lb-{secrets.token_urlsafe(32)}"
+                print(f"✓ Generated API key: {custom_api_key}")
+            else:
+                print("✓ Using custom API key")
+            
+            # Create configuration
+            config = create_config_file(auth_files, api_port, custom_api_key)
+            
+            # Output for GitHub Actions
+            with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                f.write(f"api_key={custom_api_key}\n")
+                f.write(f"api_port={api_port}\n")
+                f.write(f"accounts_count={len(auth_files)}\n")
+                f.write(f"api_endpoint=http://localhost:{api_port}\n")
+
+        if __name__ == "__main__":
+            main()
+        PYTHON_SCRIPT
+
+    - name: Decrypt tokens and setup configuration
+      id: setup
+      env:
+        INPUT_ENCRYPTION_KEY: ${{ inputs.encryption_key }}
+        INPUT_API_PORT: ${{ inputs.api_port }}
+        INPUT_CUSTOM_API_KEY: ${{ inputs.custom_api_key }}
+        QWEN_TOKENS: ${{ secrets.QWEN_TOKENS }}
+      run: |
+        python decrypt_tokens.py
+
+    - name: Create health check script
+      run: |
+        cat > health_check.py << 'PYTHON_SCRIPT'
+        import requests
+        import time
+        import sys
+
+        def check_health(api_endpoint, api_key):
+            """Check if the API is responsive"""
+            try:
+                headers = {'Authorization': f'Bearer {api_key}'}
+                
+                # Check models endpoint
+                response = requests.get(f"{api_endpoint}/v1/models", headers=headers, timeout=10)
+                
+                if response.status_code == 200:
+                    models = response.json()
+                    print(f"✓ API is healthy - {len(models.get('data', []))} models available")
+                    return True
+                else:
+                    print(f"✗ API health check failed: HTTP {response.status_code}")
+                    return False
+                    
+            except Exception as e:
+                print(f"✗ Health check error: {e}")
+                return False
+
+        def main():
+            api_endpoint = "http://localhost:${{ steps.setup.outputs.api_port }}"
+            api_key = "${{ steps.setup.outputs.api_key }}"
+            
+            # Wait for startup
+            time.sleep(5)
+            
+            for attempt in range(5):
+                if check_health(api_endpoint, api_key):
+                    sys.exit(0)
+                print(f"Attempt {attempt + 1}/5 failed, retrying in 10 seconds...")
+                time.sleep(10)
+            
+            print("Health check failed after 5 attempts")
+            sys.exit(1)
+
+        if __name__ == "__main__":
+            main()
+        PYTHON_SCRIPT
+
+    - name: Start CLIProxyAPI in background
+      run: |
+        echo "Starting CLIProxyAPI with ${{ steps.setup.outputs.accounts_count }} Qwen accounts..."
+        
+        # Start the proxy in background
+        nohup ./cli-proxy-api --config config.yaml > proxy.log 2>&1 &
+        PROXY_PID=$!
+        echo $PROXY_PID > proxy.pid
+        
+        echo "✓ CLIProxyAPI started with PID: $PROXY_PID"
+        echo "✓ Listening on port: ${{ steps.setup.outputs.api_port }}"
+        
+        # Wait a moment for startup
+        sleep 10
+        
+        # Check if process is still running
+        if kill -0 $PROXY_PID 2>/dev/null; then
+            echo "✓ Process is running successfully"
+        else
+            echo "✗ Process failed to start"
+            cat proxy.log
+            exit 1
+        fi
+
+    - name: Run health check
+      run: |
+        python health_check.py
+
+    - name: Display API information
+      run: |
+        echo "=================================="
+        echo "CLIPROXYAPI LOAD BALANCER STARTED"
+        echo "=================================="
+        echo ""
+        echo "📊 Configuration:"
+        echo "   • Accounts: ${{ steps.setup.outputs.accounts_count }} Qwen Code accounts"
+        echo "   • Port: ${{ steps.setup.outputs.api_port }}"
+        echo "   • Load Balancing: Round-robin enabled"
+        echo "   • Health Checks: Enabled"
+        echo ""
+        echo "🔗 API Endpoint: ${{ steps.setup.outputs.api_endpoint }}"
+        echo "🔑 API Key: ${{ steps.setup.outputs.api_key }}"
+        echo ""
+        echo "📋 Available Endpoints:"
+        echo "   • GET  /v1/models"
+        echo "   • POST /v1/chat/completions"
+        echo "   • POST /v1/completions"
+        echo ""
+        echo "📝 Usage Example (curl):"
+        echo 'curl -X POST "${{ steps.setup.outputs.api_endpoint }}/v1/chat/completions" \'
+        echo '  -H "Authorization: Bearer ${{ steps.setup.outputs.api_key }}" \'
+        echo '  -H "Content-Type: application/json" \'
+        echo '  -d '"'"'{'
+        echo '    "model": "qwen3-coder-plus",'
+        echo '    "messages": [{"role": "user", "content": "Hello!"}],'
+        echo '    "stream": false'
+        echo '  }'"'"
+        echo ""
+        echo "⚠️  This endpoint will run for up to 6 hours or until manually stopped"
+
+    - name: Monitor and keep alive
+      run: |
+        echo "Starting monitoring loop..."
+        PROXY_PID=$(cat proxy.pid)
+        START_TIME=$(date +%s)
+        MAX_RUNTIME=21600  # 6 hours in seconds
+        
+        while true; do
+            CURRENT_TIME=$(date +%s)
+            RUNTIME=$((CURRENT_TIME - START_TIME))
+            
+            # Check if max runtime exceeded
+            if [ $RUNTIME -ge $MAX_RUNTIME ]; then
+                echo "Maximum runtime (6 hours) reached. Stopping..."
+                break
+            fi
+            
+            # Check if process is still running
+            if ! kill -0 $PROXY_PID 2>/dev/null; then
+                echo "Process died unexpectedly. Checking logs..."
+                tail -n 50 proxy.log
+                exit 1
+            fi
+            
+            # Log status every 30 minutes
+            if [ $((RUNTIME % 1800)) -eq 0 ] && [ $RUNTIME -gt 0 ]; then
+                HOURS=$((RUNTIME / 3600))
+                MINUTES=$(((RUNTIME % 3600) / 60))
+                echo "Status: Running for ${HOURS}h ${MINUTES}m - Process PID: $PROXY_PID"
+                
+                # Show last few log entries
+                echo "Recent activity:"
+                tail -n 5 proxy.log
+            fi
+            
+            sleep 60  # Check every minute
+        done
+
+    - name: Cleanup
+      if: always()
+      run: |
+        echo "Cleaning up..."
+        
+        # Stop the proxy if still running
+        if [ -f proxy.pid ]; then
+            PROXY_PID=$(cat proxy.pid)
+            if kill -0 $PROXY_PID 2>/dev/null; then
+                echo "Stopping CLIProxyAPI (PID: $PROXY_PID)"
+                kill $PROXY_PID
+                sleep 5
+            fi
+            rm -f proxy.pid
+        fi
+        
+        # Show final logs
+        if [ -f proxy.log ]; then
+            echo "Final log entries:"
+            tail -n 20 proxy.log
+        fi
+        
+        # Cleanup sensitive files
+        rm -f decrypt_tokens.py
+        rm -f health_check.py
+        rm -rf ./auths
+        
+        echo "✓ Cleanup completed"
+
+    - name: Upload logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: cliproxyapi-logs
+        path: |
+          proxy.log
+          config.yaml
+        retention-days: 3
