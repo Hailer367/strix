@@ -49,84 +49,96 @@ jobs:
 
       - name: Create auth directory
         run: |
-          # Create the auth directory with full path
-          AUTH_DIR="$HOME/.cli-proxy-api"
-          mkdir -p "$AUTH_DIR"
-          chmod 700 "$AUTH_DIR"
-          
-          # Verify it exists
-          if [ ! -d "$AUTH_DIR" ]; then
-            echo "Failed to create auth directory"
-            exit 1
-          fi
-          
-          # Create the auth-urls directory
+          mkdir -p ~/.cli-proxy-api
           mkdir -p ./auth-urls
-          
-          echo "Auth directory created at: $AUTH_DIR"
-          ls -la "$AUTH_DIR"
+          echo "Auth directory created at: $(readlink -f ~/.cli-proxy-api)"
 
-      - name: Generate login URLs directly (no server needed)
+      - name: Create server configuration
+        run: |
+          AUTH_DIR=$(readlink -f ~/.cli-proxy-api)
+          
+          cat > config.yaml << EOF
+          port: 8080
+          auth-dir: "$AUTH_DIR"
+          debug: false
+          EOF
+          
+          echo "Configuration created:"
+          cat config.yaml
+
+      - name: Start authentication server and generate login URLs
         run: |
           echo "=========================================="
           echo "QWEN CODE AUTHENTICATION URLS"
           echo "=========================================="
           echo ""
-          echo "Generating login URLs for all ${{ github.event.inputs.num_accounts }} accounts..."
+          echo "Starting authentication server..."
+          
+          # Start the CLI Proxy API server in background with config file
+          nohup cli-proxy-api -config config.yaml > server.log 2>&1 &
+          SERVER_PID=$!
+          echo $SERVER_PID > server.pid
+          
+          # Wait for server to start
+          sleep 5
+          
+          # Check if server is running
+          if ! kill -0 $SERVER_PID 2>/dev/null; then
+            echo "Error: Server failed to start"
+            cat server.log
+            exit 1
+          fi
+          
+          echo "Server started successfully (PID: $SERVER_PID)"
           echo ""
-          echo "⚠️  IMPORTANT: Complete each OAuth flow within 5 minutes"
+          echo "⚠️  IMPORTANT: Complete each OAuth flow within 10 minutes"
           echo ""
           
           # Generate login URL for each account
-          echo "Generating login URLs for all ${{ github.event.inputs.num_accounts }} accounts..."
-          echo ""
-          
           for i in $(seq 1 ${{ github.event.inputs.num_accounts }}); do
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             echo "📱 ACCOUNT $i LOGIN URL:"
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             
             # Trigger Qwen login and capture the URL - no flags needed
-            (timeout 10s cli-proxy-api -qwen-login -no-browser 2>&1 || true) | tee login-$i.log &
+            (timeout 30s cli-proxy-api -qwen-login -no-browser 2>&1 || true) | tee login-$i.log &
             LOGIN_PID=$!
             
             # Wait for the URL to be generated
-            sleep 3
+            sleep 5
             
             # Extract the OAuth URL from logs
             if [ -f login-$i.log ]; then
-              URL=$(grep -oP 'https://[^\s]+' login-$i.log | head -1 || echo "Generating...")
+              URL=$(grep -oP 'https://[^\s]+' login-$i.log | head -1 || echo "Waiting for URL...")
               echo "$URL"
             fi
+            
+            echo ""
+            echo "👆 Click the URL above to authenticate account $i"
+            echo "After completing login, wait 30 seconds before the next account"
+            echo ""
             
             # Save URL to file
             grep -oP 'https://[^\s]+' login-$i.log | head -1 > ./auth-urls/account-$i-url.txt || true
             
-            echo ""
+            # Wait for user to complete OAuth (with timeout)
+            sleep 30
             
-            # Just a short wait before generating next URL
-            sleep 2
+            # Kill the login process
+            kill $LOGIN_PID 2>/dev/null || true
           done
-          
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo ""
-          echo "✅ All ${{ github.event.inputs.num_accounts }} login URLs generated!"
-          echo ""
-          echo "👆 Open all URLs above in separate tabs and complete the authentication"
           
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo ""
           echo "⏰ Waiting 5 minutes for all OAuth flows to complete..."
           echo "You have until $(date -d '+5 minutes' '+%H:%M:%S') to finish all logins"
           echo ""
-          echo "💡 TIP: You can authenticate all accounts simultaneously in different browser tabs"
-          echo ""
           
           # Wait 5 minutes for all OAuth completions
           sleep 300
           
-          echo ""
-          echo "⏱️  Authentication window closed. Collecting tokens..."
+          # Stop the server
+          kill $SERVER_PID 2>/dev/null || true
 
       - name: Display all authentication URLs in summary
         run: |
