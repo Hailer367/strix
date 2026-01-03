@@ -92,23 +92,55 @@ jobs:
             echo ""
           done
 
-      - name: Generate login URLs for all accounts
+      - name: Authenticate accounts sequentially
         run: |
           echo "=========================================="
-          echo "QWEN CODE AUTHENTICATION URLS"
+          echo "QWEN CODE AUTHENTICATION - SEQUENTIAL MODE"
           echo "=========================================="
           echo ""
-          
-          echo "Generating login URLs for all ${{ github.event.inputs.num_accounts }} accounts..."
-          echo ""
-          echo "⚠️  IMPORTANT: Complete each OAuth flow within 5 minutes"
+          echo "Authenticating ${{ github.event.inputs.num_accounts }} account(s) one at a time..."
+          echo "Each account must complete authentication before the next begins."
           echo ""
           
-          # Generate login URL for each account
+          # Function to wait for token file
+          wait_for_token() {
+            local account_num=$1
+            local account_dir="$HOME/.cli-proxy-api/account-$account_num"
+            local max_wait=600  # 10 minutes
+            local elapsed=0
+            local check_interval=2
+            
+            echo "⏳ Waiting for account $account_num authentication to complete..."
+            echo "   Checking directory: $account_dir"
+            echo ""
+            
+            while [ $elapsed -lt $max_wait ]; do
+              # Check if token file exists
+              if ls "$account_dir"/qwen-*.json >/dev/null 2>&1; then
+                echo "✅ Account $account_num authenticated successfully!"
+                echo "   Token file found: $(ls "$account_dir"/qwen-*.json)"
+                return 0
+              fi
+              
+              # Show progress every 10 seconds
+              if [ $((elapsed % 10)) -eq 0 ] && [ $elapsed -gt 0 ]; then
+                echo "   Still waiting... (${elapsed}s elapsed)"
+              fi
+              
+              sleep $check_interval
+              elapsed=$((elapsed + check_interval))
+            done
+            
+            echo "❌ Timeout waiting for account $account_num authentication"
+            return 1
+          }
+          
+          # Authenticate each account sequentially
           for i in $(seq 1 ${{ github.event.inputs.num_accounts }}); do
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            echo "📱 ACCOUNT $i LOGIN URL:"
+            echo "📱 ACCOUNT $i - AUTHENTICATION"
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo ""
             
             # Use account-specific config file
             CONFIG_PATH="$(pwd)/config-account-$i.yaml"
@@ -118,113 +150,82 @@ jobs:
               exit 1
             fi
             
-            # Trigger Qwen login with account-specific config
-            (timeout 10s cli-proxy-api -config "$CONFIG_PATH" -qwen-login -no-browser 2>&1 || true) | tee login-$i.log &
-            LOGIN_PID=$!
-            
-            # Wait for the URL to be generated
-            sleep 3
-            
-            # Extract the OAuth URL from logs
-            if [ -f login-$i.log ]; then
-              URL=$(grep -oP 'https://[^\s]+' login-$i.log | head -1 || echo "Generating...")
-              echo "$URL"
-            fi
-            
-            # Save URL to file
-            grep -oP 'https://[^\s]+' login-$i.log | head -1 > ./auth-urls/account-$i-url.txt || true
-            
+            echo "Starting authentication server for account $i..."
             echo ""
             
-            # Just a short wait before generating next URL
-            sleep 2
-          done
-          
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo ""
-          echo "✅ All ${{ github.event.inputs.num_accounts }} login URLs generated!"
-          echo ""
-          echo "👆 Open all URLs above in separate tabs and complete the authentication"
-          
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo ""
-          echo "⏰ Waiting for all OAuth flows to complete..."
-          echo "Maximum wait time: 10 minutes"
-          echo ""
-          echo "💡 TIP: You can authenticate all accounts simultaneously in different browser tabs"
-          echo ""
-          
-          # Monitor for token files with timeout
-          EXPECTED_TOKENS=${{ github.event.inputs.num_accounts }}
-          MAX_WAIT=600  # 10 minutes in seconds
-          ELAPSED=0
-          CHECK_INTERVAL=5  # Check every 5 seconds
-          
-          echo "Monitoring for $EXPECTED_TOKENS token file(s)..."
-          echo ""
-          
-          while [ $ELAPSED -lt $MAX_WAIT ]; do
-            # Count current token files across all account directories
-            CURRENT_TOKENS=0
-            for i in $(seq 1 ${{ github.event.inputs.num_accounts }}); do
-              if ls ~/.cli-proxy-api/account-$i/qwen-*.json 2>/dev/null | grep -q .; then
-                CURRENT_TOKENS=$((CURRENT_TOKENS + 1))
+            # Start the CLI proxy API server in the background with logging
+            cli-proxy-api -config "$CONFIG_PATH" -qwen-login > "server-$i.log" 2>&1 &
+            SERVER_PID=$!
+            
+            echo "Server started with PID: $SERVER_PID"
+            
+            # Wait a moment for server to start and generate URL
+            sleep 5
+            
+            # Extract and display the OAuth URL
+            if [ -f "server-$i.log" ]; then
+              URL=$(grep -oP 'https://[^\s]+' "server-$i.log" | head -1 || echo "")
+              
+              if [ -n "$URL" ]; then
+                echo "🔗 CLICK THIS URL TO AUTHENTICATE ACCOUNT $i:"
+                echo ""
+                echo "   $URL"
+                echo ""
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                echo ""
+                
+                # Save URL to file for summary
+                echo "$URL" > ./auth-urls/account-$i-url.txt
+              else
+                echo "⚠️  Could not extract OAuth URL from logs"
+                echo "Server log contents:"
+                cat "server-$i.log"
               fi
-            done
+            fi
             
-            if [ "$CURRENT_TOKENS" -ge "$EXPECTED_TOKENS" ]; then
+            # Wait for this account to authenticate before proceeding
+            if wait_for_token $i; then
               echo ""
-              echo "🎉 All $EXPECTED_TOKENS accounts authenticated successfully!"
-              echo "Total time: ${ELAPSED} seconds"
-              break
-            fi
-            
-            # Show progress every 15 seconds
-            if [ $((ELAPSED % 15)) -eq 0 ]; then
-              echo "⏳ Progress: $CURRENT_TOKENS/$EXPECTED_TOKENS accounts authenticated (${ELAPSED}s elapsed)"
-            fi
-            
-            sleep $CHECK_INTERVAL
-            ELAPSED=$((ELAPSED + CHECK_INTERVAL))
-          done
-          
-          # Final check - count tokens across all account directories
-          FINAL_COUNT=0
-          for i in $(seq 1 ${{ github.event.inputs.num_accounts }}); do
-            if ls ~/.cli-proxy-api/account-$i/qwen-*.json 2>/dev/null | grep -q .; then
-              FINAL_COUNT=$((FINAL_COUNT + 1))
+              echo "🎉 Account $i is ready! Moving to next account..."
+              echo ""
+              
+              # Kill the server for this account
+              kill $SERVER_PID 2>/dev/null || true
+              sleep 2
+            else
+              echo ""
+              echo "❌ Failed to authenticate account $i within timeout period"
+              echo "⚠️  Stopping workflow. Please try again."
+              
+              # Kill the server
+              kill $SERVER_PID 2>/dev/null || true
+              exit 1
             fi
           done
           
-          if [ "$FINAL_COUNT" -lt "$EXPECTED_TOKENS" ]; then
-            echo ""
-            echo "⚠️  Timeout reached. Found $FINAL_COUNT/$EXPECTED_TOKENS tokens."
-            echo "You can still proceed, but some accounts may be missing."
-          fi
-          
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🎉 ALL ACCOUNTS AUTHENTICATED SUCCESSFULLY!"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo ""
-          echo "⏱️  Authentication monitoring complete. Collecting tokens..."
 
       - name: Display all authentication URLs in summary
         run: |
           echo "## 🔐 Qwen Code Authentication URLs" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Complete the OAuth flow for each account by clicking the URLs below:" >> $GITHUB_STEP_SUMMARY
+          echo "Authentication was completed sequentially. Below are the URLs that were used:" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
           for i in $(seq 1 ${{ github.event.inputs.num_accounts }}); do
             echo "### Account $i" >> $GITHUB_STEP_SUMMARY
             if [ -f ./auth-urls/account-$i-url.txt ]; then
               URL=$(cat ./auth-urls/account-$i-url.txt)
-              echo "- [🔗 Click here to login]($URL)" >> $GITHUB_STEP_SUMMARY
+              echo "- ✅ Authenticated successfully" >> $GITHUB_STEP_SUMMARY
+              echo "- URL used: \`${URL:0:50}...\`" >> $GITHUB_STEP_SUMMARY
             else
-              echo "- ⚠️  URL not generated - check logs" >> $GITHUB_STEP_SUMMARY
+              echo "- ⚠️  Authentication data not found" >> $GITHUB_STEP_SUMMARY
             fi
             echo "" >> $GITHUB_STEP_SUMMARY
           done
-          
-          echo "---" >> $GITHUB_STEP_SUMMARY
-          echo "⏰ **Complete all logins within 10 minutes**" >> $GITHUB_STEP_SUMMARY
 
       - name: Verify collected tokens
         run: |
@@ -235,12 +236,14 @@ jobs:
           TOKEN_COUNT=0
           for i in $(seq 1 ${{ github.event.inputs.num_accounts }}); do
             ACCOUNT_DIR="$HOME/.cli-proxy-api/account-$i"
-            if ls "$ACCOUNT_DIR"/qwen-*.json 2>/dev/null | grep -q .; then
+            if ls "$ACCOUNT_DIR"/qwen-*.json 1>/dev/null 2>&1; then
               TOKEN_COUNT=$((TOKEN_COUNT + 1))
               echo "✅ Account $i: Token found"
-              ls -la "$ACCOUNT_DIR"/qwen-*.json
+              ls -lh "$ACCOUNT_DIR"/qwen-*.json
             else
-              echo "❌ Account $i: No token found"
+              echo "❌ Account $i: No token found in $ACCOUNT_DIR"
+              echo "   Directory contents:"
+              ls -la "$ACCOUNT_DIR" || echo "   Directory does not exist or is empty"
             fi
           done
           
@@ -252,18 +255,17 @@ jobs:
             echo "❌ No tokens found!"
             echo "OAuth authentication was not completed."
             echo ""
-            echo "Please run the workflow again and make sure to:"
-            echo "1. Click all the generated OAuth URLs"
-            echo "2. Complete the authentication in your browser"
-            echo "3. Wait for the 'authenticated successfully' message"
+            echo "Debug information:"
+            echo "Main auth directory contents:"
+            ls -la "$HOME/.cli-proxy-api"
             echo ""
             exit 1
           fi
           
           if [ "$TOKEN_COUNT" -lt "${{ github.event.inputs.num_accounts }}" ]; then
             echo "⚠️  Warning: Expected ${{ github.event.inputs.num_accounts }} tokens but found $TOKEN_COUNT"
-            echo "Some OAuth flows may not have completed successfully."
-            echo "The workflow will continue with the tokens that were collected."
+            echo "This should not happen with sequential authentication."
+            echo "Proceeding anyway with collected tokens."
             echo ""
           else
             echo "🎉 All expected tokens collected successfully!"
@@ -281,7 +283,7 @@ jobs:
           # Copy all token files to temp directory with unique names
           for i in $(seq 1 ${{ github.event.inputs.num_accounts }}); do
             ACCOUNT_DIR="$HOME/.cli-proxy-api/account-$i"
-            if ls "$ACCOUNT_DIR"/qwen-*.json 2>/dev/null | grep -q .; then
+            if ls "$ACCOUNT_DIR"/qwen-*.json 1>/dev/null 2>&1; then
               # Rename token to include account number to avoid conflicts
               cp "$ACCOUNT_DIR"/qwen-*.json "$TEMP_DIR/qwen-account-$i.json"
               echo "✅ Collected token from account $i"
@@ -297,7 +299,7 @@ jobs:
           
           echo ""
           echo "Tokens to be encrypted:"
-          ls -la "$TEMP_DIR"/qwen-*.json
+          ls -lh "$TEMP_DIR"/qwen-*.json
           echo ""
           
           # Create tarball of all collected tokens
