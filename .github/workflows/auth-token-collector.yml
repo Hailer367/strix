@@ -47,7 +47,7 @@ jobs:
           cd ..
           rm -rf CLIProxyAPI
 
-      - name: Create auth directory
+      - name: Create auth directory structure
         run: |
           # Create the main auth directory
           AUTH_DIR="$HOME/.cli-proxy-api"
@@ -62,29 +62,20 @@ jobs:
             echo "Created directory for account $i: $ACCOUNT_DIR"
           done
           
-          # Verify main directory exists
-          if [ ! -d "$AUTH_DIR" ]; then
-            echo "Failed to create auth directory"
-            exit 1
-          fi
-          
-          # Create the auth-urls directory
-          mkdir -p ./auth-urls
-          
           echo ""
           echo "Auth directory structure:"
           ls -la "$AUTH_DIR"
-          echo ""
-          ls -la "$AUTH_DIR"/*/ 2>/dev/null || true
 
-      - name: Create minimal config file
+      - name: Create config files for each account
         run: |
-          # Create a separate config file for each account with its own auth-dir
+          # Create a separate config file for each account
           for i in $(seq 1 ${{ github.event.inputs.num_accounts }}); do
+            # Qwen uses port 1455 for OAuth callback
             cat > config-account-$i.yaml << EOF
-          port: $((8080 + i - 1))
+          port: 1455
           auth-dir: "$HOME/.cli-proxy-api/account-$i"
-          debug: false
+          debug: true
+          logging-to-file: true
           EOF
             
             echo "Config file created for account $i:"
@@ -92,147 +83,247 @@ jobs:
             echo ""
           done
 
+      - name: Setup ngrok for OAuth callbacks
+        run: |
+          # Install ngrok for exposing port 1455
+          curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+          echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
+          sudo apt update
+          sudo apt install ngrok
+          
+          echo "Ngrok installed successfully"
+
       - name: Authenticate accounts sequentially
         run: |
           echo "=========================================="
           echo "QWEN CODE AUTHENTICATION - SEQUENTIAL MODE"
           echo "=========================================="
           echo ""
-          echo "Authenticating ${{ github.event.inputs.num_accounts }} account(s) one at a time..."
-          echo "Each account must complete authentication before the next begins."
+          echo "⚠️  CRITICAL: Qwen OAuth uses port 1455 for callbacks"
           echo ""
           
-          # Function to wait for token file
+          # Function to check for token file
+          check_token_exists() {
+            local account_num=$1
+            local account_dir="$HOME/.cli-proxy-api/account-$account_num"
+            
+            # Check if any qwen-*.json file exists
+            if ls "$account_dir"/qwen-*.json >/dev/null 2>&1; then
+              return 0
+            else
+              return 1
+            fi
+          }
+          
+          # Function to wait for token with detailed monitoring
           wait_for_token() {
             local account_num=$1
             local account_dir="$HOME/.cli-proxy-api/account-$account_num"
             local max_wait=600  # 10 minutes
             local elapsed=0
-            local check_interval=2
+            local check_interval=3
             
-            echo "⏳ Waiting for account $account_num authentication to complete..."
-            echo "   Checking directory: $account_dir"
+            echo "⏳ Monitoring for token file in: $account_dir"
             echo ""
             
             while [ $elapsed -lt $max_wait ]; do
-              # Check if token file exists
-              if ls "$account_dir"/qwen-*.json >/dev/null 2>&1; then
-                echo "✅ Account $account_num authenticated successfully!"
-                echo "   Token file found: $(ls "$account_dir"/qwen-*.json)"
+              # Check for token file
+              if check_token_exists $account_num; then
+                echo ""
+                echo "✅ TOKEN DETECTED for account $account_num!"
+                echo "   Token file: $(ls "$account_dir"/qwen-*.json)"
+                echo "   File size: $(stat -c%s "$account_dir"/qwen-*.json 2>/dev/null || echo 'unknown') bytes"
+                echo "   Created: $(stat -c%y "$account_dir"/qwen-*.json 2>/dev/null || echo 'unknown')"
                 return 0
               fi
               
-              # Show progress every 10 seconds
-              if [ $((elapsed % 10)) -eq 0 ] && [ $elapsed -gt 0 ]; then
-                echo "   Still waiting... (${elapsed}s elapsed)"
+              # Progress update every 15 seconds
+              if [ $((elapsed % 15)) -eq 0 ]; then
+                echo "   ⏱️  Still waiting... ${elapsed}s elapsed (checking every ${check_interval}s)"
+                echo "   📁 Directory contents:"
+                ls -la "$account_dir" 2>/dev/null || echo "   Directory empty or not accessible"
               fi
               
               sleep $check_interval
               elapsed=$((elapsed + check_interval))
             done
             
-            echo "❌ Timeout waiting for account $account_num authentication"
+            echo ""
+            echo "❌ TIMEOUT: No token found after ${max_wait} seconds"
             return 1
           }
           
           # Authenticate each account sequentially
           for i in $(seq 1 ${{ github.event.inputs.num_accounts }}); do
+            echo ""
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            echo "📱 ACCOUNT $i - AUTHENTICATION"
+            echo "📱 ACCOUNT $i OF ${{ github.event.inputs.num_accounts }}"
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             echo ""
             
-            # Use account-specific config file
             CONFIG_PATH="$(pwd)/config-account-$i.yaml"
+            ACCOUNT_DIR="$HOME/.cli-proxy-api/account-$i"
             
             if [ ! -f "$CONFIG_PATH" ]; then
-              echo "Error: Config file not found at $CONFIG_PATH"
+              echo "❌ ERROR: Config file not found at $CONFIG_PATH"
               exit 1
             fi
             
-            echo "Starting authentication server for account $i..."
+            echo "📋 Config: $CONFIG_PATH"
+            echo "📁 Auth dir: $ACCOUNT_DIR"
             echo ""
             
-            # Start the CLI proxy API server in the background with logging
+            # Start ngrok tunnel for this account (port 1455)
+            echo "🌐 Starting ngrok tunnel on port 1455..."
+            ngrok http 1455 --log=stdout > ngrok-$i.log 2>&1 &
+            NGROK_PID=$!
+            
+            # Wait for ngrok to start
+            sleep 5
+            
+            # Get the ngrok public URL
+            NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | grep -o '"public_url":"https://[^"]*' | grep -o 'https://[^"]*' | head -1)
+            
+            if [ -z "$NGROK_URL" ]; then
+              echo "⚠️  Could not get ngrok URL, using localhost"
+              CALLBACK_INFO="localhost:1455"
+            else
+              echo "✅ Ngrok tunnel: $NGROK_URL"
+              CALLBACK_INFO="$NGROK_URL (port 1455 exposed)"
+            fi
+            echo ""
+            
+            # Start CLI Proxy API server in background
+            echo "🚀 Starting CLIProxyAPI server for account $i..."
             cli-proxy-api -config "$CONFIG_PATH" -qwen-login > "server-$i.log" 2>&1 &
             SERVER_PID=$!
             
-            echo "Server started with PID: $SERVER_PID"
+            echo "   Server PID: $SERVER_PID"
+            echo "   Callback port: 1455"
+            echo "   Callback URL: http://$CALLBACK_INFO/callback"
+            echo ""
             
-            # Wait a moment for server to start and generate URL
-            sleep 5
+            # Wait for server to generate OAuth URL
+            sleep 8
             
-            # Extract and display the OAuth URL
+            # Extract OAuth URL from server logs
             if [ -f "server-$i.log" ]; then
-              URL=$(grep -oP 'https://[^\s]+' "server-$i.log" | head -1 || echo "")
+              # Look for the device code URL pattern
+              AUTH_URL=$(grep -oP 'https://[^\s]+' "server-$i.log" | grep -i "qwen\|tongyi\|oauth\|device" | head -1)
               
-              if [ -n "$URL" ]; then
-                echo "🔗 CLICK THIS URL TO AUTHENTICATE ACCOUNT $i:"
+              if [ -n "$AUTH_URL" ]; then
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                echo "🔑 AUTHENTICATION URL FOR ACCOUNT $i:"
                 echo ""
-                echo "   $URL"
+                echo "   $AUTH_URL"
                 echo ""
                 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 echo ""
+                echo "👉 CLICK THE URL ABOVE AND COMPLETE AUTHENTICATION"
+                echo "   The OAuth callback will use: http://$CALLBACK_INFO/callback"
+                echo ""
                 
-                # Save URL to file for summary
-                echo "$URL" > ./auth-urls/account-$i-url.txt
+                # Save URL for summary
+                echo "$AUTH_URL" > ./auth-url-account-$i.txt
               else
-                echo "⚠️  Could not extract OAuth URL from logs"
-                echo "Server log contents:"
-                cat "server-$i.log"
+                echo "⚠️  Could not extract OAuth URL from server logs"
+                echo "📄 Server log preview (first 50 lines):"
+                head -50 "server-$i.log"
+                echo ""
               fi
             fi
             
-            # Wait for this account to authenticate before proceeding
+            # Wait for token to appear
+            echo "⏰ Waiting for authentication to complete..."
+            echo "   (Monitoring: $ACCOUNT_DIR/qwen-*.json)"
+            echo ""
+            
             if wait_for_token $i; then
               echo ""
-              echo "🎉 Account $i is ready! Moving to next account..."
+              echo "🎉 Account $i authenticated successfully!"
               echo ""
               
-              # Kill the server for this account
+              # Verify token file
+              TOKEN_FILE=$(ls "$ACCOUNT_DIR"/qwen-*.json 2>/dev/null | head -1)
+              if [ -f "$TOKEN_FILE" ]; then
+                echo "✅ Token verified:"
+                echo "   File: $TOKEN_FILE"
+                echo "   Size: $(stat -c%s "$TOKEN_FILE") bytes"
+                echo ""
+              fi
+              
+              # Clean up
               kill $SERVER_PID 2>/dev/null || true
+              kill $NGROK_PID 2>/dev/null || true
               sleep 2
+              
+              # Short pause before next account
+              if [ $i -lt ${{ github.event.inputs.num_accounts }} ]; then
+                echo "⏸️  Waiting 5 seconds before starting next account..."
+                sleep 5
+              fi
             else
               echo ""
-              echo "❌ Failed to authenticate account $i within timeout period"
-              echo "⚠️  Stopping workflow. Please try again."
+              echo "❌ FAILED to authenticate account $i"
+              echo ""
+              echo "📄 Debug information:"
+              echo "Server log (last 100 lines):"
+              tail -100 "server-$i.log"
+              echo ""
+              echo "Directory contents:"
+              ls -la "$ACCOUNT_DIR"
+              echo ""
               
-              # Kill the server
+              # Clean up
               kill $SERVER_PID 2>/dev/null || true
+              kill $NGROK_PID 2>/dev/null || true
+              
+              echo "⚠️  Stopping workflow due to authentication failure"
               exit 1
             fi
           done
           
+          echo ""
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🎉 ALL ACCOUNTS AUTHENTICATED SUCCESSFULLY!"
+          echo "🎉 ALL ${{ github.event.inputs.num_accounts }} ACCOUNTS AUTHENTICATED!"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo ""
 
-      - name: Display all authentication URLs in summary
+      - name: Display authentication summary
         run: |
-          echo "## 🔐 Qwen Code Authentication URLs" >> $GITHUB_STEP_SUMMARY
+          echo "## 🔐 Qwen Code Authentication Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Authentication was completed sequentially. Below are the URLs that were used:" >> $GITHUB_STEP_SUMMARY
+          echo "All accounts were authenticated sequentially:" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
           for i in $(seq 1 ${{ github.event.inputs.num_accounts }}); do
             echo "### Account $i" >> $GITHUB_STEP_SUMMARY
-            if [ -f ./auth-urls/account-$i-url.txt ]; then
-              URL=$(cat ./auth-urls/account-$i-url.txt)
-              echo "- ✅ Authenticated successfully" >> $GITHUB_STEP_SUMMARY
-              echo "- URL used: \`${URL:0:50}...\`" >> $GITHUB_STEP_SUMMARY
+            
+            ACCOUNT_DIR="$HOME/.cli-proxy-api/account-$i"
+            if ls "$ACCOUNT_DIR"/qwen-*.json >/dev/null 2>&1; then
+              TOKEN_FILE=$(ls "$ACCOUNT_DIR"/qwen-*.json | head -1)
+              TOKEN_SIZE=$(stat -c%s "$TOKEN_FILE")
+              echo "- ✅ **Authenticated successfully**" >> $GITHUB_STEP_SUMMARY
+              echo "- Token size: ${TOKEN_SIZE} bytes" >> $GITHUB_STEP_SUMMARY
             else
-              echo "- ⚠️  Authentication data not found" >> $GITHUB_STEP_SUMMARY
+              echo "- ❌ **Authentication failed**" >> $GITHUB_STEP_SUMMARY
+            fi
+            
+            if [ -f ./auth-url-account-$i.txt ]; then
+              URL=$(cat ./auth-url-account-$i.txt)
+              echo "- URL used: \`${URL:0:60}...\`" >> $GITHUB_STEP_SUMMARY
             fi
             echo "" >> $GITHUB_STEP_SUMMARY
           done
+          
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "🔗 **OAuth callback port:** 1455" >> $GITHUB_STEP_SUMMARY
 
-      - name: Verify collected tokens
+      - name: Verify and count tokens
         run: |
           echo "Verifying collected tokens..."
           echo ""
           
-          # Check each account directory
           TOKEN_COUNT=0
           for i in $(seq 1 ${{ github.event.inputs.num_accounts }}); do
             ACCOUNT_DIR="$HOME/.cli-proxy-api/account-$i"
@@ -241,35 +332,25 @@ jobs:
               echo "✅ Account $i: Token found"
               ls -lh "$ACCOUNT_DIR"/qwen-*.json
             else
-              echo "❌ Account $i: No token found in $ACCOUNT_DIR"
-              echo "   Directory contents:"
-              ls -la "$ACCOUNT_DIR" || echo "   Directory does not exist or is empty"
+              echo "❌ Account $i: No token found"
             fi
           done
           
           echo ""
-          echo "Total tokens collected: $TOKEN_COUNT/${{ github.event.inputs.num_accounts }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📊 FINAL TOKEN COUNT: $TOKEN_COUNT/${{ github.event.inputs.num_accounts }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo ""
           
           if [ "$TOKEN_COUNT" -eq "0" ]; then
-            echo "❌ No tokens found!"
-            echo "OAuth authentication was not completed."
-            echo ""
-            echo "Debug information:"
-            echo "Main auth directory contents:"
-            ls -la "$HOME/.cli-proxy-api"
-            echo ""
+            echo "❌ CRITICAL: No tokens were collected!"
             exit 1
           fi
           
           if [ "$TOKEN_COUNT" -lt "${{ github.event.inputs.num_accounts }}" ]; then
-            echo "⚠️  Warning: Expected ${{ github.event.inputs.num_accounts }} tokens but found $TOKEN_COUNT"
-            echo "This should not happen with sequential authentication."
-            echo "Proceeding anyway with collected tokens."
-            echo ""
+            echo "⚠️  WARNING: Only collected $TOKEN_COUNT out of ${{ github.event.inputs.num_accounts }} tokens"
           else
-            echo "🎉 All expected tokens collected successfully!"
-            echo ""
+            echo "✅ SUCCESS: All tokens collected!"
           fi
 
       - name: Collect and encrypt tokens
@@ -277,20 +358,18 @@ jobs:
           echo "Collecting tokens from all account directories..."
           echo ""
           
-          # Create a temporary directory to collect all tokens
           TEMP_DIR=$(mktemp -d)
           
-          # Copy all token files to temp directory with unique names
+          # Copy all token files
           for i in $(seq 1 ${{ github.event.inputs.num_accounts }}); do
             ACCOUNT_DIR="$HOME/.cli-proxy-api/account-$i"
             if ls "$ACCOUNT_DIR"/qwen-*.json 1>/dev/null 2>&1; then
-              # Rename token to include account number to avoid conflicts
               cp "$ACCOUNT_DIR"/qwen-*.json "$TEMP_DIR/qwen-account-$i.json"
               echo "✅ Collected token from account $i"
             fi
           done
           
-          # Verify we have tokens
+          # Verify tokens
           TOKEN_COUNT=$(ls "$TEMP_DIR"/qwen-*.json 2>/dev/null | wc -l)
           if [ "$TOKEN_COUNT" -eq "0" ]; then
             echo "❌ No tokens to encrypt!"
@@ -302,52 +381,46 @@ jobs:
           ls -lh "$TEMP_DIR"/qwen-*.json
           echo ""
           
-          # Create tarball of all collected tokens
+          # Create tarball
           cd "$TEMP_DIR"
           tar -czf qwen-tokens.tar.gz qwen-*.json
           echo "✅ Tokens collected in tarball"
           
-          # Use user-provided password for encryption
+          # Encrypt
           USER_PASSWORD="${{ github.event.inputs.encryption_password }}"
-          
-          # Encrypt the tokens
           echo "$USER_PASSWORD" | openssl enc -aes-256-cbc -salt -pbkdf2 -in qwen-tokens.tar.gz -out qwen-tokens.enc -pass stdin
-          echo "✅ Tokens encrypted with your password"
+          echo "✅ Tokens encrypted"
           
-          # Base64 encode for GitHub Secrets
+          # Base64 encode
           base64 -w 0 qwen-tokens.enc > qwen-tokens.b64
-          echo "✅ Tokens base64 encoded"
+          echo "✅ Tokens encoded"
           
-          # Move the final file to home directory for later access
           mv qwen-tokens.b64 "$HOME/"
           
-          # Display results
           echo ""
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "📦 ENCRYPTED TOKENS READY"
+          echo "📦 ENCRYPTION COMPLETE"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo ""
-          echo "Number of accounts: $TOKEN_COUNT"
-          echo "Encrypted token size: $(stat -c%s "$HOME/qwen-tokens.b64") bytes"
+          echo "Accounts encrypted: $TOKEN_COUNT"
+          echo "Final size: $(stat -c%s "$HOME/qwen-tokens.b64") bytes"
           echo ""
           
-          # Cleanup temp directory
           rm -rf "$TEMP_DIR"
 
       - name: Prepare GitHub Secrets instructions
         run: |
-          # Read the encrypted token from home directory
           ENCRYPTED_TOKEN=$(cat "$HOME/qwen-tokens.b64")
           
           echo "## 🎉 Tokens Successfully Collected!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Your Qwen Code tokens have been encrypted and are ready to upload to GitHub Secrets." >> $GITHUB_STEP_SUMMARY
+          echo "Your Qwen Code tokens have been encrypted and are ready to upload." >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 📋 Instructions:" >> $GITHUB_STEP_SUMMARY
+          echo "### 📋 Next Steps:" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "1. Go to your repository **Settings** → **Secrets and variables** → **Actions**" >> $GITHUB_STEP_SUMMARY
+          echo "1. Go to **Settings** → **Secrets and variables** → **Actions**" >> $GITHUB_STEP_SUMMARY
           echo "2. Click **New repository secret**" >> $GITHUB_STEP_SUMMARY
-          echo "3. Create the following secret:" >> $GITHUB_STEP_SUMMARY
+          echo "3. Create this secret:" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "#### Secret Name: \`QWEN_TOKENS\`" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
@@ -356,11 +429,11 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "---" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "⚠️ **Important:** Remember your encryption password - you'll need it to decrypt!" >> $GITHUB_STEP_SUMMARY
+          echo "⚠️ **IMPORTANT:** Save your encryption password!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "✅ After creating this secret, use the **CLIProxyAPI Server** workflow to start your API endpoint!" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Use the **CLIProxyAPI Server** workflow to start your API!" >> $GITHUB_STEP_SUMMARY
 
-      - name: Upload token files as artifacts (backup)
+      - name: Upload encrypted tokens as artifact
         uses: actions/upload-artifact@v4
         with:
           name: qwen-encrypted-tokens
