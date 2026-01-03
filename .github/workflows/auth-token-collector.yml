@@ -75,18 +75,14 @@ jobs:
           debug: false
           EOF
           
-          echo "Config file created:"
+          echo "Config file created at: $(pwd)/config.yaml"
           cat config.yaml
 
-      - name: Generate login URLs directly (no server needed)
+      - name: Generate login URLs for all accounts
         run: |
           echo "=========================================="
           echo "QWEN CODE AUTHENTICATION URLS"
           echo "=========================================="
-          echo ""
-          echo "Generating login URLs for all ${{ github.event.inputs.num_accounts }} accounts..."
-          echo ""
-          echo "⚠️  IMPORTANT: Complete each OAuth flow within 5 minutes"
           echo ""
           
           # Get the full path to config file
@@ -96,14 +92,20 @@ jobs:
           # Verify config exists
           if [ ! -f "$CONFIG_PATH" ]; then
             echo "Error: Config file not found at $CONFIG_PATH"
+            ls -la "$(pwd)"
             exit 1
           fi
+          
+          echo "Config verified. Contents:"
+          cat "$CONFIG_PATH"
+          echo ""
+          
+          echo "Generating login URLs for all ${{ github.event.inputs.num_accounts }} accounts..."
+          echo ""
+          echo "⚠️  IMPORTANT: Complete each OAuth flow within 5 minutes"
           echo ""
           
           # Generate login URL for each account
-          echo "Generating login URLs for all ${{ github.event.inputs.num_accounts }} accounts..."
-          echo ""
-          
           for i in $(seq 1 ${{ github.event.inputs.num_accounts }}); do
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             echo "📱 ACCOUNT $i LOGIN URL:"
