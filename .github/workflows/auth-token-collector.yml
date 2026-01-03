@@ -58,49 +58,61 @@ jobs:
 
       # ---------- 4.  authenticate sequentially ----------
       - name: Authenticate accounts sequentially
+        env:
+          QWEN_ALIASES: ${{ secrets.QWEN_ALIASES }}   # <-- "acc1,acc2,acc3,..."
         run: |
-          for i in $(seq 1 ${{ github.event.inputs.num_accounts }}); do
+          # --- 1.  split secret into array ---
+          IFS=',' read -r -a ALIAS_ARRAY <<< "$QWEN_ALIASES"
+          NEEDED=${{ github.event.inputs.num_accounts }}
+          if [ "${#ALIAS_ARRAY[@]}" -lt "$NEEDED" ]; then
+            echo "❌  Secret QWEN_ALIASES contains ${#ALIAS_ARRAY[@]} aliases, but $NEEDED accounts requested"
+            exit 1
+          fi
+
+          # --- 2.  build patched CLIProxyAPI (reads QWEN_ALIAS env-var) ---
+          git clone https://github.com/YOUR_FORK/CLIProxyAPI.git   # ← your fork that uses os.Getenv("QWEN_ALIAS")
+          cd CLIProxyAPI
+          go build -o cli-proxy-api ./cmd/server
+          sudo cp cli-proxy-api /usr/local/bin/cliproxyapi
+          cd .. && rm -rf CLIProxyAPI
+
+          # --- 3.  authenticate each account ---
+          for i in $(seq 1 "$NEEDED"); do
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            echo "📱 ACCOUNT $i / ${{ github.event.inputs.num_accounts }}"
+            echo "📱 ACCOUNT $i / $NEEDED"
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
             CONFIG="config-account-$i.yaml"
             ACCOUNT_DIR="$HOME/.cli-proxy-api/account-$i"
 
-            # 1.  start server in background
+            # pick alias for this account (zero-based array)
+            export QWEN_ALIAS="${ALIAS_ARRAY[$((i-1))]}"
+
+            # start server (background)
             nohup cliproxyapi -config "$CONFIG" -qwen-login > server-$i.log 2>&1 &
             SERVER_PID=$!
 
-            # 2.  wait until OAuth URL is printed
+            # wait for OAuth URL
             for retry in {1..30}; do
-              AUTH_URL=$(grep -oP 'https://[^\s]+' server-$i.log | head -1)
-              [ -n "$AUTH_URL" ] && break
+              URL=$(grep -oP 'https://[^\s]+' server-$i.log | head -1)
+              [ -n "$URL" ] && break
               sleep 2
             done
+            [ -z "$URL" ] && { echo "❌ No OAuth URL"; exit 1; }
 
-            if [ -z "$AUTH_URL" ]; then
-              echo "❌ No OAuth URL detected"; tail -50 server-$i.log; exit 1
-            fi
+            echo "👉 Browser URL (auto-finishing with alias $QWEN_ALIAS):"
+            echo "   $URL"
 
-            echo "👉 OPEN THIS URL IN YOUR BROWSER (you have 10 min):"
-            echo "   $AUTH_URL"
-            echo ""
-            echo "⚠️  When prompted, type a unique alias (e.g. account$i) and finish the flow."
-
-            # 3.  wait for token file (any qwen-*.json inside the account folder)
+            # wait for token file
             for s in {1..600}; do
-              TOKEN_FILE=$(find "$ACCOUNT_DIR" -maxdepth 1 -name 'qwen-*.json' -print -quit)
-              [ -n "$TOKEN_FILE" ] && echo "✅ Token detected: $(basename "$TOKEN_FILE")" && break
+              TOKEN=$(find "$ACCOUNT_DIR" -maxdepth 1 -name 'qwen-*.json' -print -quit)
+              [ -n "$TOKEN" ] && echo "✅ Token detected: $(basename "$TOKEN")" && break
               sleep 1
             done
+            [ -z "$TOKEN" ] && { echo "❌ Timeout"; exit 1; }
 
-            if [ -z "$TOKEN_FILE" ]; then
-              echo "❌ Timeout – no token file created"; exit 1
-            fi
-
-            # 4.  clean up
             kill $SERVER_PID 2>/dev/null || true
-            echo "⏸️  5 s pause before next account..."; sleep 5
+            echo "⏸️  5 s pause …"; sleep 5
           done
 
       # ---------- 5.  verify & encrypt ----------
