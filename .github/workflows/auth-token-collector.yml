@@ -27,10 +27,11 @@ jobs:
         run: |
           git clone https://github.com/luispater/CLIProxyAPI.git
           cd CLIProxyAPI
+          go build -o cli-proxy-api ./cmd/server   # ← build it
           sudo cp cli-proxy-api /usr/local/bin/cliproxyapi
           cd ..
           rm -rf CLIProxyAPI
-          cliproxyapi --help          # quick sanity check
+          cliproxyapi --help
 
       # ---------- 2.  create per-account folders ----------
       - name: Create auth directory structure
