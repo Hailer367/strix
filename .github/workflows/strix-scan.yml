@@ -62,11 +62,11 @@ on:
   
   # Trigger on pull requests
   pull_request:
-    branches: [main, master, develop]
+    branches: [master, develop]
   
   # Trigger on pushes to main
   push:
-    branches: [main, master]
+    branches: [master]
 
 # Cancel in-progress runs for the same PR/branch
 concurrency:
