@@ -67,34 +67,39 @@ jobs:
             CONFIG="config-account-$i.yaml"
             ACCOUNT_DIR="$HOME/.cli-proxy-api/account-$i"
 
-            # start server in background
-            cliproxyapi -config "$CONFIG" -qwen-login > server-$i.log 2>&1 &
+            # 1.  start server in background
+            nohup cliproxyapi -config "$CONFIG" -qwen-login > server-$i.log 2>&1 &
             SERVER_PID=$!
 
-            sleep 8                                           # let it print URL
-            AUTH_URL=$(grep -oP 'https://[^\s]+' server-$i.log | head -1)
+            # 2.  wait until OAuth URL is printed
+            for retry in {1..30}; do
+              AUTH_URL=$(grep -oP 'https://[^\s]+' server-$i.log | head -1)
+              [ -n "$AUTH_URL" ] && break
+              sleep 2
+            done
 
-            if [ -n "$AUTH_URL" ]; then
-              echo "👉 OPEN THIS URL IN YOUR BROWSER (you have 10 min):"
-              echo "   $AUTH_URL"
-            else
-              echo "⚠️  Could not auto-detect URL; check server-$i.log"
+            if [ -z "$AUTH_URL" ]; then
+              echo "❌ No OAuth URL detected"; tail -50 server-$i.log; exit 1
             fi
 
-            # wait for token file (max 10 min)
+            echo "👉 OPEN THIS URL IN YOUR BROWSER (you have 10 min):"
+            echo "   $AUTH_URL"
+            echo ""
+            echo "⚠️  When prompted, type a unique alias (e.g. account$i) and finish the flow."
+
+            # 3.  wait for token file (any qwen-*.json inside the account folder)
             for s in {1..600}; do
-              if ls "$ACCOUNT_DIR"/qwen-*.json 2>/dev/null | grep -q .; then
-                echo "✅ Token detected for account $i"
-                break
-              fi
+              TOKEN_FILE=$(find "$ACCOUNT_DIR" -maxdepth 1 -name 'qwen-*.json' -print -quit)
+              [ -n "$TOKEN_FILE" ] && echo "✅ Token detected: $(basename "$TOKEN_FILE")" && break
               sleep 1
             done
 
-            # cleanup
-            kill $SERVER_PID 2>/dev/null || true
-            if [ ! -f "$ACCOUNT_DIR"/qwen-*.json ]; then
-              echo "❌ No token for account $i"; exit 1
+            if [ -z "$TOKEN_FILE" ]; then
+              echo "❌ Timeout – no token file created"; exit 1
             fi
+
+            # 4.  clean up
+            kill $SERVER_PID 2>/dev/null || true
             echo "⏸️  5 s pause before next account..."; sleep 5
           done
 
