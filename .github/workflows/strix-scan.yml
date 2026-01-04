@@ -64,7 +64,7 @@ on:
         type: choice
         options:
           - 'qwen3-coder-plus'
-          - 'qwen-coder-plus'
+          - 'qwen3-coder-flash'
           - 'qwen-plus'
           - 'qwen-max'
       enable_strixdb:
@@ -93,13 +93,18 @@ jobs:
       pull-requests: write
 
     steps:
-      # ---------- 1.  compute timeout (NO quotes) ----------
+      # ---------- 1. Compute timeout (correctly) ----------
       - name: Compute timeout
         id: vars
         run: |
           set -euo pipefail
-          TF=${{ github.event.inputs.timeframe || env.DEFAULT_TIMEFRAME }}
-          echo $(( TF + 30 )) >> "$GITHUB_OUTPUT"
+          TF="${{ github.event.inputs.timeframe || env.DEFAULT_TIMEFRAME }}"
+          # Ensure TF is a number
+          if ! [[ "$TF" =~ ^[0-9]+$ ]]; then
+            echo "Invalid timeframe: $TF" >&2
+            exit 1
+          fi
+          echo "timeout=$(( TF + 30 ))" >> "$GITHUB_OUTPUT"
 
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -150,11 +155,15 @@ jobs:
         run: |
           set -euo pipefail
           echo "::group::Installing CLIProxyAPI"
-          git clone --depth 1 https://github.com/router-for-me/CLIProxyAPI.git   /tmp/CLIProxyAPI
+          git clone --depth 1 https://github.com/router-for-me/CLIProxyAPI.git /tmp/CLIProxyAPI
           cd /tmp/CLIProxyAPI
           go build -o cli-proxy-api ./cmd/server
           sudo mv cli-proxy-api /usr/local/bin/
-          cli-proxy-api --version || echo "CLIProxyAPI installed"
+          if ! cli-proxy-api --help >/dev/null 2>&1; then
+            echo "::error::CLIProxyAPI failed to install"
+            exit 1
+          fi
+          echo "CLIProxyAPI installed"
           echo "::endgroup::"
 
       - name: Configure CLIProxyAPI
@@ -163,28 +172,21 @@ jobs:
           echo "::group::Configuring CLIProxyAPI"
           AUTH_DIR="$HOME/.cli-proxy-api"
           cat > "$AUTH_DIR/config.yaml" <<EOF
-          server:
-            port: ${{ env.CLIPROXY_PORT }}
-            host: "0.0.0.0"
-          providers:
-            qwen:
-              enabled: true
-              load-balance: true
-              round-robin: true
-              health-check: true
-          auth-dir: "$AUTH_DIR"
-          quota-exceeded:
-            switch-project: true
-            switch-preview-model: true
-          request-retry: 3
-          timeout: "300s"
-          logging:
-            level: "info"
-            file: "$AUTH_DIR/cliproxy.log"
-          cors:
-            enabled: true
-            origins: ["*"]
-          EOF
+port: ${{ env.CLIPROXY_PORT }}
+auth-dir: "$AUTH_DIR"
+providers:
+  qwen:
+    enabled: true
+    load-balance: true
+    round-robin: true
+    health-check: true
+quota-exceeded:
+  switch-project: true
+  switch-preview-model: true
+request-retry: 3
+timeout: "300s"
+logging-to-file: true
+EOF
           echo "Configuration created at $AUTH_DIR/config.yaml"
           echo "::endgroup::"
 
@@ -197,11 +199,11 @@ jobs:
           cd "$AUTH_DIR"
           nohup cli-proxy-api -config config.yaml > cliproxy.log 2>&1 &
           SERVER_PID=$!
-          echo $SERVER_PID > cliproxy.pid
+          echo "$SERVER_PID" > cliproxy.pid
           sleep 10
           if ! kill -0 $SERVER_PID 2>/dev/null; then
             echo "::error::CLIProxyAPI failed to start"
-            cat cliproxy.log
+            cat cliproxy.log || echo "No log file"
             exit 1
           fi
           for i in {1..12}; do
@@ -231,7 +233,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "::group::Installing Strix"
-          git clone --depth 1 https://github.com/Hailer367/strix.git   /tmp/strix
+          git clone --depth 1 https://github.com/Hailer367/strix.git /tmp/strix
           cd /tmp/strix
           pip install -q poetry
           poetry config virtualenvs.create false
@@ -253,35 +255,35 @@ jobs:
           [ -z "$ENABLE_STRIXDB" ] && ENABLE_STRIXDB="true"
           for CONFIG_DIR in "$GITHUB_WORKSPACE" "/tmp/strix"; do
             cat > "$CONFIG_DIR/config.json" <<EOF
-          {
-            "api": {
-              "endpoint": "${{ steps.cliproxy.outputs.endpoint }}",
-              "model": "$MODEL"
-            },
-            "timeframe": {
-              "duration_minutes": $TIMEFRAME,
-              "warning_minutes": $WARNING,
-              "time_awareness_enabled": true
-            },
-            "dashboard": {
-              "enabled": true,
-              "refresh_interval": 1.0,
-              "show_time_remaining": true,
-              "show_agent_details": true,
-              "show_tool_logs": true,
-              "show_resource_usage": true,
-              "show_api_calls": true,
-              "show_vulnerabilities": true
-            },
-            "scan_mode": "$SCAN_MODE",
-            "strixdb": {
-              "enabled": $ENABLE_STRIXDB,
-              "repo": "${{ secrets.STRIXDB_REPO }}",
-              "token": "${{ secrets.STRIXDB_TOKEN }}"
-            },
-            "perplexity_api_key": "${{ secrets.PERPLEXITY_API_KEY }}"
-          }
-          EOF
+{
+  "api": {
+    "endpoint": "${{ steps.cliproxy.outputs.endpoint }}",
+    "model": "$MODEL"
+  },
+  "timeframe": {
+    "duration_minutes": $TIMEFRAME,
+    "warning_minutes": $WARNING,
+    "time_awareness_enabled": true
+  },
+  "dashboard": {
+    "enabled": true,
+    "refresh_interval": 1.0,
+    "show_time_remaining": true,
+    "show_agent_details": true,
+    "show_tool_logs": true,
+    "show_resource_usage": true,
+    "show_api_calls": true,
+    "show_vulnerabilities": true
+  },
+  "scan_mode": "$SCAN_MODE",
+  "strixdb": {
+    "enabled": $ENABLE_STRIXDB,
+    "repo": "${{ secrets.STRIXDB_REPO }}",
+    "token": "${{ secrets.STRIXDB_TOKEN }}"
+  },
+  "perplexity_api_key": "${{ secrets.PERPLEXITY_API_KEY }}"
+}
+EOF
           done
           echo "Configuration Summary:"
           echo "  - Endpoint: ${{ steps.cliproxy.outputs.endpoint }}"
@@ -307,7 +309,7 @@ jobs:
 
       - name: Run Strix Security Scan
         id: strix
-        timeout-minutes: ${{ steps.vars.outputs.timeout }}   # integer, no quotes
+        timeout-minutes: ${{ steps.vars.outputs.timeout }}
         continue-on-error: true
         env:
           STRIXDB_TOKEN: ${{ secrets.STRIXDB_TOKEN }}
@@ -338,7 +340,7 @@ jobs:
           fi
           timeout ${TIMEFRAME}m bash -c "$CMD" 2>&1 | tee strix_output.log
           EXIT_CODE=${PIPESTATUS[0]}
-          EXIT_CODE=${EXIT_CODE:-1}                       # never empty
+          EXIT_CODE=${EXIT_CODE:-1}
           VULN_COUNT=$(grep -ciE "vulnerability|VULNERABILITY|CVE-|critical|high.*severity" strix_output.log 2>/dev/null || echo "0")
           case $EXIT_CODE in
             0)
@@ -373,6 +375,7 @@ jobs:
           if [ -f "$AUTH_DIR/cliproxy.pid" ]; then
             PID=$(cat "$AUTH_DIR/cliproxy.pid")
             kill $PID 2>/dev/null || true
+            wait $PID 2>/dev/null || true
             echo "CLIProxyAPI stopped (PID: $PID)"
           fi
           if [ -f "$AUTH_DIR/cliproxy.log" ]; then
