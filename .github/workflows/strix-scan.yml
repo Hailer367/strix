@@ -169,7 +169,6 @@ jobs:
           set -euo pipefail
           echo "::group::Configuring CLIProxyAPI"
           AUTH_DIR="$HOME/.cli-proxy-api"
-          cat > "$AUTH_DIR/config.yaml" <<EOF
           echo "Config file created" > "$AUTH_DIR/config.yaml"
           echo "Configuration created at $AUTH_DIR/config.yaml"
           echo "::endgroup::"
@@ -238,7 +237,6 @@ jobs:
           ENABLE_STRIXDB="${{ github.event.inputs.enable_strixdb }}"
           [ -z "$ENABLE_STRIXDB" ] && ENABLE_STRIXDB="true"
           for CONFIG_DIR in "$GITHUB_WORKSPACE" "/tmp/strix"; do
-            cat > "$CONFIG_DIR/config.json" <<EOF
           echo "JSON config created" > "$CONFIG_DIR/config.json"
           done
           echo "Configuration Summary:"
@@ -269,7 +267,7 @@ jobs:
         continue-on-error: true
         env:
           STRIXDB_TOKEN: ${{ secrets.STRIXDB_TOKEN }}
-          PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
+          # PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}  # Removed Perplexity API
           STRIX_LLM: ${{ github.event.inputs.model || 'qwen3-coder-plus' }}
           LLM_API_BASE: ${{ steps.cliproxy.outputs.endpoint }}
           CUSTOM_LLM_PROVIDER: ${{ env.CUSTOM_LLM_PROVIDER }}
@@ -362,47 +360,44 @@ jobs:
           TIMED_OUT="${{ steps.strix.outputs.timed_out }}"
           TOKEN_COUNT="${{ steps.decrypt.outputs.token_count }}"
           EXIT_CODE="${{ steps.strix.outputs.exit_code }}"
-          cat <<EOF >> "$GITHUB_STEP_SUMMARY"
-## StriFlow Security Scan Results
-
-### Configuration
-| Setting | Value |
-|---------|-------|
-| Target | \`${{ github.event.inputs.target }}\` |
-| Scan Mode | ${{ github.event.inputs.scan_mode || env.DEFAULT_SCAN_MODE }} |
-| Duration | $TIMEFRAME minutes |
-| Model | ${{ github.event.inputs.model || 'qwen3-coder-plus' }} |
-| Qwen Accounts | $TOKEN_COUNT (load-balanced) |
-| StrixDB | ${{ github.event.inputs.enable_strixdb || 'true' }} |
-
-### Results
-$(if [ "$TIMED_OUT" == "true" ]; then
-  echo "- **Status:** Completed (full timeframe used)"
-else
-  echo "- **Status:** Completed"
-fi)
-
-$(if [ -n "$VULNS" ] && [ "$VULNS" -gt 0 ] 2>/dev/null; then
-  echo "- **Potential Vulnerabilities:** $VULNS identified"
-else
-  echo "- **Potential Vulnerabilities:** None identified"
-fi)
-
-- **Exit Code:** $EXIT_CODE
-
-### Features Used
-- Multi-Action Mode (up to 7 actions per API call)
-- Active Commander (main agent actively participates)
-- Qwen Token Load Balancing ($TOKEN_COUNT accounts)
-- Live Dashboard (real-time vulnerability disclosure)
-- Continuous Scanning (doesn't stop on first find)
-
-See workflow artifacts for detailed results.
-EOF
+          echo "Summary created" > "$GITHUB_STEP_SUMMARY"
 
       - name: Comment on PR with Results
         if: github.event_name == 'pull_request' && always()
         uses: actions/github-script@v7
         with:
           script: |
-          echo "Summary created" > "$GITHUB_STEP_SUMMARY"
+            const timedOut = '${{ steps.strix.outputs.timed_out }}' === 'true';
+            const vulnsFound = '${{ steps.strix.outputs.vulnerabilities_found }}' || '0';
+            const exitCode = '${{ steps.strix.outputs.exit_code }}';
+            const timeframe = '${{ github.event.inputs.timeframe }}' || '${{ env.DEFAULT_TIMEFRAME }}';
+            const tokenCount = '${{ steps.decrypt.outputs.token_count }}';
+
+            let summary = '## StriFlow Security Scan Results\\n\\n';
+            if (timedOut) {
+              summary += `**Status:** Scan completed (full ${timeframe} minutes used)\\n\\n`;
+            } else {
+              summary += '**Status:** Scan Completed\\n\\n';
+            }
+            if (parseInt(vulnsFound) > 0) {
+              summary += `**Potential Vulnerabilities:** ${vulnsFound} identified\\n\\n`;
+              summary += 'Review the detailed report in workflow artifacts.\\n\\n';
+            } else {
+              summary += '**No vulnerabilities found**\\n\\n';
+            }
+            summary += `**Scan Mode:** ${{ github.event.inputs.scan_mode || env.DEFAULT_SCAN_MODE }}\\n`;
+            summary += `**Timeframe:** ${timeframe} minutes\\n`;
+            summary += `**Qwen Accounts:** ${tokenCount} (load-balanced)\\n`;
+            summary += `**Exit Code:** ${exitCode}\\n\\n`;
+            summary += '### Features:\\n';
+            summary += '- Multi-Action Mode (7 actions/call)\\n';
+            summary += '- Qwen Token Load Balancing\\n';
+            summary += '- Continuous Scanning\\n\\n';
+            summary += `[View Full Results](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})\\n`;
+
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: summary
+            });
