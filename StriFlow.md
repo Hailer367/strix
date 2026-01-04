@@ -234,26 +234,33 @@ jobs:
           echo "$QWEN_TOKENS" | base64 -d > ~/.cli-proxy-api/qwen-tokens.enc
           
           # Decrypt using openssl (same method as auth-token-collector.yml)
-          echo "$DECRYPTION_PASSWORD" | openssl enc -aes-256-cbc -d -salt -pbkdf2 \
+          if ! echo "$DECRYPTION_PASSWORD" | openssl enc -aes-256-cbc -d -salt -pbkdf2 \
             -in ~/.cli-proxy-api/qwen-tokens.enc \
             -out ~/.cli-proxy-api/qwen-tokens.tar.gz \
-            -pass stdin
-          
-          DECRYPT_RESULT=$?
-          if [ $DECRYPT_RESULT -ne 0 ]; then
+            -pass stdin 2>/dev/null; then
             echo "::error::Failed to decrypt tokens. Check your password!"
             exit 1
           fi
           
-          # Extract tokens
+          # Extract tokens to the main auth directory
           cd ~/.cli-proxy-api
           tar -xzf qwen-tokens.tar.gz
           
+          # Handle both flat structure and account-N subdirectory structure from auth-token-collector
+          # Move any tokens from account-N subdirectories to the main directory
+          for dir in account-*/; do
+            if [ -d "$dir" ]; then
+              mv "$dir"qwen-*.json . 2>/dev/null || true
+            fi
+          done
+          
           # Count extracted token files
-          TOKEN_COUNT=$(ls qwen-*.json 2>/dev/null | wc -l)
+          TOKEN_COUNT=$(find . -maxdepth 1 -name 'qwen-*.json' 2>/dev/null | wc -l)
           
           if [ "$TOKEN_COUNT" -eq "0" ]; then
             echo "::error::No token files found after decryption!"
+            echo "Directory contents:"
+            ls -la
             exit 1
           fi
           
@@ -270,8 +277,8 @@ jobs:
         run: |
           echo "Installing CLIProxyAPI from source..."
           
-          # Clone CLIProxyAPI repository
-          git clone https://github.com/router-for-me/CLIProxyAPI.git /tmp/CLIProxyAPI
+          # Clone CLIProxyAPI repository (using luispater's repo which is the main source)
+          git clone https://github.com/luispater/CLIProxyAPI.git /tmp/CLIProxyAPI
           cd /tmp/CLIProxyAPI
           
           # Build from source
@@ -293,13 +300,18 @@ jobs:
       # STEP 5: Configure and Start CLIProxyAPI
       # ==========================================
       - name: Configure CLIProxyAPI
+        env:
+          CLIPROXY_PORT: ${{ env.CLIPROXY_PORT }}
         run: |
           echo "Configuring CLIProxyAPI..."
           
-          # Create configuration file
-          cat > ~/.cli-proxy-api/config.yaml << 'EOF'
+          # Expand home directory
+          AUTH_DIR="$HOME/.cli-proxy-api"
+          
+          # Create configuration file (using EOF without quotes to allow variable expansion)
+          cat > "$AUTH_DIR/config.yaml" << EOF
           server:
-            port: ${{ env.CLIPROXY_PORT }}
+            port: ${CLIPROXY_PORT}
             host: "0.0.0.0"
           
           providers:
@@ -309,7 +321,7 @@ jobs:
               round-robin: true
               health-check: true
           
-          auth-dir: "~/.cli-proxy-api"
+          auth-dir: "${AUTH_DIR}"
           
           quota-exceeded:
             switch-project: true
@@ -320,26 +332,27 @@ jobs:
           
           logging:
             level: "info"
-            file: "./cliproxy.log"
+            file: "${AUTH_DIR}/cliproxy.log"
           
           cors:
             enabled: true
             origins: ["*"]
           EOF
           
-          # Expand home directory in config
-          sed -i "s|~|$HOME|g" ~/.cli-proxy-api/config.yaml
-          
-          echo "Configuration created at ~/.cli-proxy-api/config.yaml"
-          cat ~/.cli-proxy-api/config.yaml
+          echo "Configuration created at $AUTH_DIR/config.yaml"
+          cat "$AUTH_DIR/config.yaml"
       
       - name: Start CLIProxyAPI Server
         id: cliproxy
+        env:
+          CLIPROXY_PORT: ${{ env.CLIPROXY_PORT }}
         run: |
           echo "Starting CLIProxyAPI server..."
           
+          AUTH_DIR="$HOME/.cli-proxy-api"
+          
           # Start server in background
-          cd ~/.cli-proxy-api
+          cd "$AUTH_DIR"
           nohup cli-proxy-api -config config.yaml > cliproxy.log 2>&1 &
           SERVER_PID=$!
           echo $SERVER_PID > cliproxy.pid
@@ -351,6 +364,7 @@ jobs:
           # Check if server is running
           if ! kill -0 $SERVER_PID 2>/dev/null; then
             echo "::error::CLIProxyAPI server failed to start!"
+            echo "Server log:"
             cat cliproxy.log
             exit 1
           fi
@@ -358,11 +372,11 @@ jobs:
           echo "CLIProxyAPI server started (PID: $SERVER_PID)"
           
           # Health check - wait for server to be ready
-          MAX_RETRIES=10
+          MAX_RETRIES=12
           RETRY_COUNT=0
           
           while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-            if curl -s http://localhost:${{ env.CLIPROXY_PORT }}/v1/models > /dev/null 2>&1; then
+            if curl -s "http://localhost:${CLIPROXY_PORT}/v1/models" > /dev/null 2>&1; then
               echo "CLIProxyAPI is healthy and ready!"
               break
             fi
@@ -374,10 +388,12 @@ jobs:
           
           if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
             echo "::warning::CLIProxyAPI health check timed out, but continuing..."
+            echo "Last log entries:"
+            tail -20 cliproxy.log
           fi
           
           # Output the endpoint
-          ENDPOINT="http://localhost:${{ env.CLIPROXY_PORT }}/v1"
+          ENDPOINT="http://localhost:${CLIPROXY_PORT}/v1"
           echo "endpoint=$ENDPOINT" >> $GITHUB_OUTPUT
           echo "pid=$SERVER_PID" >> $GITHUB_OUTPUT
           
@@ -407,7 +423,10 @@ jobs:
           poetry install --no-interaction
           
           # Verify installation
-          echo "Strix version: $(python -c 'import strix; print(strix.__version__)' 2>/dev/null || echo 'installed from source')"
+          echo "Strix version: $(python -c 'import strix; print(getattr(strix, "__version__", "installed from source"))' 2>/dev/null || echo 'installed from source')"
+          
+          # Verify CLI is accessible
+          python -m strix.interface.main --help || echo "CLI module loaded"
           
           echo "Strix installation complete"
       
@@ -415,17 +434,25 @@ jobs:
       # STEP 7: Create Strix Configuration
       # ==========================================
       - name: Create Strix config.json
+        id: config
+        env:
+          CLIPROXY_ENDPOINT: ${{ steps.cliproxy.outputs.endpoint }}
+          STRIXDB_REPO: ${{ secrets.STRIXDB_REPO }}
+          STRIXDB_TOKEN: ${{ secrets.STRIXDB_TOKEN }}
+          PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
         run: |
           TIMEFRAME="${{ github.event.inputs.timeframe || env.DEFAULT_TIMEFRAME }}"
           WARNING="${{ github.event.inputs.warning_minutes || env.DEFAULT_WARNING_MINUTES }}"
           SCAN_MODE="${{ github.event.inputs.scan_mode || env.DEFAULT_SCAN_MODE }}"
           MODEL="${{ github.event.inputs.model || 'qwen3-coder-plus' }}"
+          ENABLE_STRIXDB="${{ github.event.inputs.enable_strixdb || 'false' }}"
           
-          # Create config with local CLIProxyAPI endpoint
-          cat > config.json << EOF
+          # Create config in both the checkout directory AND /tmp/strix for Strix to find it
+          for CONFIG_DIR in "$GITHUB_WORKSPACE" "/tmp/strix"; do
+            cat > "$CONFIG_DIR/config.json" << EOF
           {
             "api": {
-              "endpoint": "${{ steps.cliproxy.outputs.endpoint }}",
+              "endpoint": "${CLIPROXY_ENDPOINT}",
               "model": "${MODEL}"
             },
             "timeframe": {
@@ -445,21 +472,26 @@ jobs:
             },
             "scan_mode": "${SCAN_MODE}",
             "strixdb": {
-              "enabled": ${{ github.event.inputs.enable_strixdb || 'false' }},
-              "repo": "${{ secrets.STRIXDB_REPO || '' }}",
-              "token": "${{ secrets.STRIXDB_TOKEN || '' }}"
+              "enabled": ${ENABLE_STRIXDB},
+              "repo": "${STRIXDB_REPO:-}",
+              "token": "${STRIXDB_TOKEN:-}"
             },
-            "perplexity_api_key": "${{ secrets.PERPLEXITY_API_KEY || '' }}"
+            "perplexity_api_key": "${PERPLEXITY_API_KEY:-}"
           }
           EOF
+            echo "Created config.json at $CONFIG_DIR"
+          done
           
           echo "Created config.json:"
-          echo "  - API Endpoint: ${{ steps.cliproxy.outputs.endpoint }}"
+          echo "  - API Endpoint: ${CLIPROXY_ENDPOINT}"
           echo "  - Model: ${MODEL}"
           echo "  - Duration: ${TIMEFRAME} minutes"
           echo "  - Warning: ${WARNING} minutes before end"
           echo "  - Scan Mode: ${SCAN_MODE}"
           echo "  - Qwen Accounts: ${{ steps.decrypt.outputs.token_count }}"
+          
+          # Store working directory for later
+          echo "workspace=$GITHUB_WORKSPACE" >> $GITHUB_OUTPUT
       
       # ==========================================
       # STEP 8: Prepare Instructions
@@ -471,8 +503,9 @@ jobs:
           INSTRUCTIONS=""
           
           # Add custom prompt if provided
-          if [ -n "${{ github.event.inputs.prompt }}" ]; then
-            INSTRUCTIONS="${{ github.event.inputs.prompt }}"
+          CUSTOM_PROMPT="${{ github.event.inputs.prompt }}"
+          if [ -n "$CUSTOM_PROMPT" ]; then
+            INSTRUCTIONS="$CUSTOM_PROMPT"
           fi
           
           # Add StrixDB instructions if enabled
@@ -482,6 +515,9 @@ jobs:
           
           # Add efficiency instructions
           INSTRUCTIONS="${INSTRUCTIONS} Use multi-action mode (up to 7 actions per call) for efficiency. The API is load-balanced across ${{ steps.decrypt.outputs.token_count }} Qwen accounts."
+          
+          # Escape for JSON/shell safety
+          INSTRUCTIONS=$(echo "$INSTRUCTIONS" | sed 's/"/\\"/g')
           
           echo "instructions=${INSTRUCTIONS}" >> $GITHUB_OUTPUT
           echo "Instructions prepared: ${INSTRUCTIONS:0:100}..."
@@ -494,12 +530,17 @@ jobs:
         env:
           STRIXDB_TOKEN: ${{ secrets.STRIXDB_TOKEN }}
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
+          # Set environment variables as fallback for Strix
+          STRIX_LLM: ${{ github.event.inputs.model || 'qwen3-coder-plus' }}
+          LLM_API_BASE: ${{ steps.cliproxy.outputs.endpoint }}
         run: |
           # Don't exit on error - we want to capture all results
           set +e
           
           TARGET="${{ github.event.inputs.target || './' }}"
           TIMEFRAME="${{ github.event.inputs.timeframe || env.DEFAULT_TIMEFRAME }}"
+          SCAN_MODE="${{ github.event.inputs.scan_mode || env.DEFAULT_SCAN_MODE }}"
+          INSTRUCTIONS="${{ steps.instructions.outputs.instructions }}"
           
           echo ""
           echo "=========================================="
@@ -509,17 +550,40 @@ jobs:
           echo "Timeframe: ${TIMEFRAME} minutes"
           echo "Mode: CONTINUOUS (scans until timeframe exhausted)"
           echo "API: Load-balanced across ${{ steps.decrypt.outputs.token_count }} Qwen accounts"
+          echo "Scan Mode: ${SCAN_MODE}"
           echo "=========================================="
+          echo ""
+          
+          # Change to workspace directory where config.json is located
+          cd "$GITHUB_WORKSPACE"
+          
+          # Verify config.json exists
+          if [ -f "config.json" ]; then
+            echo "Found config.json in workspace:"
+            cat config.json
+          else
+            echo "::warning::config.json not found in workspace"
+          fi
+          
+          echo ""
+          
+          # Build the command with proper arguments
+          STRIX_CMD="python -m strix.interface.main"
+          STRIX_CMD="$STRIX_CMD --target \"${TARGET}\""
+          STRIX_CMD="$STRIX_CMD --scan-mode ${SCAN_MODE}"
+          STRIX_CMD="$STRIX_CMD --non-interactive"
+          
+          # Add instruction if provided
+          if [ -n "$INSTRUCTIONS" ]; then
+            STRIX_CMD="$STRIX_CMD --instruction \"${INSTRUCTIONS}\""
+          fi
+          
+          echo "Running: $STRIX_CMD"
           echo ""
           
           # Run Strix with timeout - DOES NOT FAIL ON VULNERABILITY FOUND
           # The AI will continue scanning until the timeframe is exhausted
-          timeout ${TIMEFRAME}m python -m strix.interface.cli \
-            --target "${TARGET}" \
-            --scan-mode "${{ github.event.inputs.scan_mode || env.DEFAULT_SCAN_MODE }}" \
-            --non-interactive \
-            --instruction "${{ steps.instructions.outputs.instructions }}" \
-            2>&1 | tee strix_output.log
+          timeout ${TIMEFRAME}m bash -c "$STRIX_CMD" 2>&1 | tee strix_output.log
           
           EXIT_CODE=$?
           
@@ -538,6 +602,13 @@ jobs:
             echo ""
             echo "=========================================="
             echo "SCAN COMPLETED SUCCESSFULLY"
+            echo "=========================================="
+            echo "scan_completed=true" >> $GITHUB_OUTPUT
+          elif [ $EXIT_CODE -eq 2 ]; then
+            # Exit code 2 means vulnerabilities were found (expected behavior)
+            echo ""
+            echo "=========================================="
+            echo "SCAN COMPLETED (Vulnerabilities Found)"
             echo "=========================================="
             echo "scan_completed=true" >> $GITHUB_OUTPUT
           else
@@ -563,8 +634,10 @@ jobs:
         run: |
           echo "Stopping CLIProxyAPI server..."
           
-          if [ -f ~/.cli-proxy-api/cliproxy.pid ]; then
-            PID=$(cat ~/.cli-proxy-api/cliproxy.pid)
+          AUTH_DIR="$HOME/.cli-proxy-api"
+          
+          if [ -f "$AUTH_DIR/cliproxy.pid" ]; then
+            PID=$(cat "$AUTH_DIR/cliproxy.pid")
             if kill -0 $PID 2>/dev/null; then
               kill $PID
               echo "CLIProxyAPI server stopped (PID: $PID)"
@@ -572,15 +645,15 @@ jobs:
           fi
           
           # Show final CLIProxyAPI logs
-          if [ -f ~/.cli-proxy-api/cliproxy.log ]; then
+          if [ -f "$AUTH_DIR/cliproxy.log" ]; then
             echo ""
             echo "CLIProxyAPI final logs (last 20 lines):"
-            tail -n 20 ~/.cli-proxy-api/cliproxy.log
+            tail -n 20 "$AUTH_DIR/cliproxy.log"
           fi
           
           # Cleanup sensitive files
-          rm -rf ~/.cli-proxy-api/qwen-*.json
-          rm -f ~/.cli-proxy-api/cliproxy.pid
+          rm -rf "$AUTH_DIR"/qwen-*.json
+          rm -f "$AUTH_DIR/cliproxy.pid"
           
           echo "Cleanup complete"
       
@@ -603,10 +676,14 @@ jobs:
       # ==========================================
       - name: Create Security Summary
         if: always()
+        env:
+          DEFAULT_TIMEFRAME: ${{ env.DEFAULT_TIMEFRAME }}
+          DEFAULT_SCAN_MODE: ${{ env.DEFAULT_SCAN_MODE }}
         run: |
           TIMEFRAME="${{ github.event.inputs.timeframe || env.DEFAULT_TIMEFRAME }}"
           VULNS="${{ steps.strix.outputs.vulnerabilities_found }}"
           TIMED_OUT="${{ steps.strix.outputs.timed_out }}"
+          TOKEN_COUNT="${{ steps.decrypt.outputs.token_count }}"
           
           echo "## StriFlow Security Scan Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -618,7 +695,7 @@ jobs:
           echo "| Scan Mode | ${{ github.event.inputs.scan_mode || env.DEFAULT_SCAN_MODE }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Duration | ${TIMEFRAME} minutes |" >> $GITHUB_STEP_SUMMARY
           echo "| Model | ${{ github.event.inputs.model || 'qwen3-coder-plus' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Qwen Accounts | ${{ steps.decrypt.outputs.token_count }} (load-balanced) |" >> $GITHUB_STEP_SUMMARY
+          echo "| Qwen Accounts | ${TOKEN_COUNT} (load-balanced) |" >> $GITHUB_STEP_SUMMARY
           echo "| StrixDB | ${{ github.event.inputs.enable_strixdb || 'false' }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
@@ -630,7 +707,7 @@ jobs:
             echo "- **Status:** Completed" >> $GITHUB_STEP_SUMMARY
           fi
           
-          if [ "$VULNS" -gt "0" ]; then
+          if [ -n "$VULNS" ] && [ "$VULNS" -gt "0" ] 2>/dev/null; then
             echo "- **Potential Vulnerabilities:** ${VULNS} identified" >> $GITHUB_STEP_SUMMARY
           else
             echo "- **Potential Vulnerabilities:** None identified" >> $GITHUB_STEP_SUMMARY
@@ -642,7 +719,7 @@ jobs:
           echo "### Features Used" >> $GITHUB_STEP_SUMMARY
           echo "- Multi-Action Mode (up to 7 actions per API call)" >> $GITHUB_STEP_SUMMARY
           echo "- Active Commander (main agent actively participates)" >> $GITHUB_STEP_SUMMARY
-          echo "- Qwen Token Load Balancing (${{ steps.decrypt.outputs.token_count }} accounts)" >> $GITHUB_STEP_SUMMARY
+          echo "- Qwen Token Load Balancing (${TOKEN_COUNT} accounts)" >> $GITHUB_STEP_SUMMARY
           echo "- Live Dashboard (real-time vulnerability disclosure)" >> $GITHUB_STEP_SUMMARY
           echo "- Continuous Scanning (doesn't stop on first find)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -663,9 +740,9 @@ jobs:
             
             const timedOut = '${{ steps.strix.outputs.timed_out }}' === 'true';
             const scanCompleted = '${{ steps.strix.outputs.scan_completed }}' === 'true';
-            const vulnsFound = '${{ steps.strix.outputs.vulnerabilities_found }}';
+            const vulnsFound = '${{ steps.strix.outputs.vulnerabilities_found }}' || '0';
             const exitCode = '${{ steps.strix.outputs.exit_code }}';
-            const timeframe = '${{ github.event.inputs.timeframe || env.DEFAULT_TIMEFRAME }}';
+            const timeframe = '${{ github.event.inputs.timeframe }}' || '${{ env.DEFAULT_TIMEFRAME }}';
             const tokenCount = '${{ steps.decrypt.outputs.token_count }}';
             
             if (timedOut) {
@@ -780,6 +857,7 @@ If you haven't already, run the **auth-token-collector.yml** workflow:
 - Wrong password
 - Tokens expired
 - Collection workflow didn't complete
+- Token files are in subdirectories (this is now handled automatically)
 
 **Solution:**
 1. Re-run auth-token-collector.yml
@@ -789,6 +867,38 @@ If you haven't already, run the **auth-token-collector.yml** workflow:
 ### "Scan timed out"
 
 **This is normal behavior!** StriFlow is designed to use the full timeframe. Increase the timeframe if you need more scanning time.
+
+### "config.json not found"
+
+**Causes:**
+- Strix looking in wrong directory
+- Config not created properly
+
+**Solution:**
+The workflow now creates config.json in multiple locations to ensure Strix finds it. If you still have issues:
+1. Check the "Create Strix config.json" step logs
+2. Verify the CLIPROXY_ENDPOINT output is set
+3. The environment variables STRIX_LLM and LLM_API_BASE are also set as fallbacks
+
+---
+
+## Key Fixes in This Version
+
+This version of StriFlow includes several important fixes:
+
+1. **Fixed YAML heredoc variable expansion**: The config.yaml now properly expands environment variables using `EOF` without quotes instead of `'EOF'`.
+
+2. **Fixed Strix CLI entry point**: Changed from `python -m strix.interface.cli` to `python -m strix.interface.main` which is the correct module entry point.
+
+3. **Fixed token file location handling**: Now handles both flat token structure and `account-N/` subdirectory structure from auth-token-collector.
+
+4. **Added config.json in multiple locations**: Creates config in both `$GITHUB_WORKSPACE` and `/tmp/strix` to ensure Strix can find it.
+
+5. **Added environment variable fallbacks**: Sets `STRIX_LLM` and `LLM_API_BASE` environment variables as fallbacks.
+
+6. **Fixed CLIProxyAPI repository URL**: Changed to `luispater/CLIProxyAPI` which matches auth-token-collector.yml.
+
+7. **Improved error handling**: Better error messages and exit code handling for various scenarios.
 
 ---
 
@@ -824,6 +934,8 @@ StriFlow uses these environment variables internally:
 - `DEFAULT_TIMEFRAME`: Default scan duration (60 min)
 - `DEFAULT_WARNING_MINUTES`: Warning time (5 min)
 - `DEFAULT_SCAN_MODE`: Default mode (standard)
+- `STRIX_LLM`: Model name (fallback for config.json)
+- `LLM_API_BASE`: API endpoint (fallback for config.json)
 
 ---
 
@@ -837,4 +949,4 @@ StriFlow uses these environment variables internally:
 ---
 
 *Last updated: January 2026*
-*Version: StriFlow 1.0 - Integrated Strix + CLIProxyAPI Workflow*
+*Version: StriFlow 1.1 - Fixed Integrated Strix + CLIProxyAPI Workflow*
