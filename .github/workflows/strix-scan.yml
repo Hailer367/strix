@@ -288,6 +288,8 @@ jobs:
           STRIX_LLM: openai/${{ github.event.inputs.model || 'qwen3-coder-plus' }}
           LLM_API_BASE: ${{ steps.cliproxy.outputs.endpoint }}
           CUSTOM_LLM_PROVIDER: openai
+          OPENAI_API_KEY: sk-dummy-key-for-cliproxy
+          OPENAI_API_BASE: ${{ steps.cliproxy.outputs.endpoint }}
         run: |
           set +euo pipefail
           echo "::group::Running Strix Security Scan"
