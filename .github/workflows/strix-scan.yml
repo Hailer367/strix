@@ -18,11 +18,13 @@ on:
         default: ''
         type: string
       timeframe:
-        description: 'Maximum runtime in minutes (10-720)'
+        description: 'Maximum runtime in minutes (3-720)'
         required: false
         default: '60'
         type: choice
         options:
+          - '3'
+          - '5'
           - '10'
           - '15'
           - '30'
@@ -279,14 +281,13 @@ jobs:
 
       - name: Run Strix Security Scan
         id: strix
-        timeout-minutes: ${{ steps.vars.outputs.timeout }}
+        timeout-minutes: ${{ fromJSON(steps.vars.outputs.timeout) }}
         continue-on-error: true
         env:
           STRIXDB_TOKEN: ${{ secrets.STRIXDB_TOKEN }}
-          # PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}  # Removed Perplexity API
-          STRIX_LLM: ${{ github.event.inputs.model || 'qwen3-coder-plus' }}
+          STRIX_LLM: openai/${{ github.event.inputs.model || 'qwen3-coder-plus' }}
           LLM_API_BASE: ${{ steps.cliproxy.outputs.endpoint }}
-          CUSTOM_LLM_PROVIDER: ${{ env.CUSTOM_LLM_PROVIDER }}
+          CUSTOM_LLM_PROVIDER: openai
         run: |
           set +euo pipefail
           echo "::group::Running Strix Security Scan"
@@ -300,7 +301,7 @@ jobs:
           echo "Target: $TARGET"
           echo "Timeframe: $TIMEFRAME minutes"
           echo "Scan Mode: $SCAN_MODE"
-          echo "Model: ${{ github.event.inputs.model || 'qwen3-coder-plus' }}"
+          echo "Model: openai/${{ github.event.inputs.model || 'qwen3-coder-plus' }}"
           echo "Accounts: ${{ steps.decrypt.outputs.token_count }}"
           echo "=========================================="
           cd "$GITHUB_WORKSPACE"
@@ -312,6 +313,10 @@ jobs:
           EXIT_CODE=${PIPESTATUS[0]}
           EXIT_CODE=${EXIT_CODE:-1}
           VULN_COUNT=$(grep -ciE "vulnerability|VULNERABILITY|CVE-|critical|high.*severity" strix_output.log 2>/dev/null || echo "0")
+          # Ensure VULN_COUNT is a valid number
+          if ! [[ "$VULN_COUNT" =~ ^[0-9]+$ ]]; then
+            VULN_COUNT="0"
+          fi
           case $EXIT_CODE in
             0)
               echo "Scan completed successfully"
@@ -331,8 +336,10 @@ jobs:
               echo "scan_completed=true" >> "$GITHUB_OUTPUT"
               ;;
           esac
-          echo "vulnerabilities_found=$VULN_COUNT" >> "$GITHUB_OUTPUT"
-          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+          {
+            echo "vulnerabilities_found=$VULN_COUNT"
+            echo "exit_code=$EXIT_CODE"
+          } >> "$GITHUB_OUTPUT"
           echo "::endgroup::"
           exit 0
 
