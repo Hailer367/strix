@@ -169,7 +169,22 @@ jobs:
           set -euo pipefail
           echo "::group::Configuring CLIProxyAPI"
           AUTH_DIR="$HOME/.cli-proxy-api"
-          echo "Config file created" > "$AUTH_DIR/config.yaml"
+          cat > "$AUTH_DIR/config.yaml" <<'CONFIG'
+port: 8317
+auth-dir: "$AUTH_DIR"
+providers:
+  qwen:
+    enabled: true
+    load-balance: true
+    round-robin: true
+    health-check: true
+quota-exceeded:
+  switch-project: true
+  switch-preview-model: true
+request-retry: 3
+timeout: "300s"
+logging-to-file: true
+CONFIG
           echo "Configuration created at $AUTH_DIR/config.yaml"
           echo "::endgroup::"
 
