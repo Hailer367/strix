@@ -65,8 +65,8 @@ on:
         options:
           - 'qwen3-coder-plus'
           - 'qwen3-coder-flash'
+          - 'qwen3-max'
           - 'qwen-plus'
-          - 'qwen-max'
       enable_strixdb:
         description: 'Enable StrixDB artifact storage'
         required: false
@@ -87,7 +87,6 @@ jobs:
   striflow-scan:
     name: StriFlow Security Scan
     runs-on: ubuntu-latest
-    # FIXED: Removed invalid timeout-minutes expression from job level
     permissions:
       contents: read
       security-events: write
@@ -308,7 +307,7 @@ EOF
 
       - name: Run Strix Security Scan
         id: strix
-        timeout-minutes: ${{ steps.vars.outputs.timeout }}  # ✅ CORRECT: uses step output
+        timeout-minutes: ${{ steps.vars.outputs.timeout }}
         continue-on-error: true
         env:
           STRIXDB_TOKEN: ${{ secrets.STRIXDB_TOKEN }}
