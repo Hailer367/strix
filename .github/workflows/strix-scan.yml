@@ -93,10 +93,11 @@ jobs:
       pull-requests: write
 
     steps:
-      # ---------- 1.  compute timeout (fixes the '+' error) ----------
+      # ---------- 1.  compute timeout ----------
       - name: Compute timeout
         id: vars
         run: |
+          set -euo pipefail
           TF=${{ github.event.inputs.timeframe || env.DEFAULT_TIMEFRAME }}
           echo "timeout=$(( TF + 30 ))" >> "$GITHUB_OUTPUT"
 
@@ -121,7 +122,7 @@ jobs:
       - name: Decrypt Qwen Tokens
         id: decrypt
         run: |
-          set -e
+          set -euo pipefail
           echo "::group::Decrypting Qwen tokens"
           if [ -z "${{ secrets.QWEN_TOKENS }}" ]; then
             echo "::error::QWEN_TOKENS secret is not set"
@@ -144,14 +145,14 @@ jobs:
             exit 1
           fi
           echo "Successfully decrypted $TOKEN_COUNT Qwen account(s)"
-          echo "token_count=$TOKEN_COUNT" >> $GITHUB_OUTPUT
+          echo "token_count=$TOKEN_COUNT" >> "$GITHUB_OUTPUT"
           rm -f qwen-tokens.enc qwen-tokens.tar.gz
           echo "::endgroup::"
 
       # ---------- 5.  install CLIProxyAPI ----------
       - name: Install CLIProxyAPI
         run: |
-          set -e
+          set -euo pipefail
           echo "::group::Installing CLIProxyAPI"
           git clone --depth 1 https://github.com/router-for-me/CLIProxyAPI.git   /tmp/CLIProxyAPI
           cd /tmp/CLIProxyAPI
@@ -163,7 +164,7 @@ jobs:
       # ---------- 6.  configure ----------
       - name: Configure CLIProxyAPI
         run: |
-          set -e
+          set -euo pipefail
           echo "::group::Configuring CLIProxyAPI"
           AUTH_DIR="$HOME/.cli-proxy-api"
           cat > "$AUTH_DIR/config.yaml" <<EOF
@@ -196,7 +197,7 @@ jobs:
       - name: Start CLIProxyAPI Server
         id: cliproxy
         run: |
-          set -e
+          set -euo pipefail
           echo "::group::Starting CLIProxyAPI Server"
           AUTH_DIR="$HOME/.cli-proxy-api"
           cd "$AUTH_DIR"
@@ -218,8 +219,8 @@ jobs:
             sleep 5
           done
           ENDPOINT="http://localhost:${{ env.CLIPROXY_PORT }}/v1"
-          echo "endpoint=$ENDPOINT" >> $GITHUB_OUTPUT
-          echo "pid=$SERVER_PID" >> $GITHUB_OUTPUT
+          echo "endpoint=$ENDPOINT" >> "$GITHUB_OUTPUT"
+          echo "pid=$SERVER_PID" >> "$GITHUB_OUTPUT"
           echo "=========================================="
           echo "CLIPROXYAPI READY"
           echo "Endpoint: $ENDPOINT"
@@ -227,10 +228,14 @@ jobs:
           echo "=========================================="
           echo "::endgroup::"
 
+      # ---------- 7b.  tell LiteLLM which provider ----------
+      - name: Export LiteLLM provider
+        run: echo "CUSTOM_LLM_PROVIDER=openai" >> "$GITHUB_ENV"
+
       # ---------- 8.  install Strix ----------
       - name: Install Strix
         run: |
-          set -e
+          set -euo pipefail
           echo "::group::Installing Strix"
           git clone --depth 1 https://github.com/Hailer367/strix.git   /tmp/strix
           cd /tmp/strix
@@ -245,7 +250,7 @@ jobs:
       - name: Create Strix Configuration
         id: config
         run: |
-          set -e
+          set -euo pipefail
           echo "::group::Creating Strix Configuration"
           TIMEFRAME="${{ github.event.inputs.timeframe || env.DEFAULT_TIMEFRAME }}"
           WARNING="${{ github.event.inputs.warning_minutes || env.DEFAULT_WARNING_MINUTES }}"
@@ -299,26 +304,28 @@ jobs:
       - name: Prepare Instructions
         id: instructions
         run: |
+          set -euo pipefail
           INSTRUCTIONS="${{ github.event.inputs.prompt }}"
           if [ "${{ github.event.inputs.enable_strixdb }}" == "true" ]; then
             INSTRUCTIONS="$INSTRUCTIONS Save useful scripts, tools, exploits, methods to StrixDB."
           fi
           INSTRUCTIONS="$INSTRUCTIONS Use multi-action mode (up to 7 actions per call) for efficiency. Load-balanced across ${{ steps.decrypt.outputs.token_count }} Qwen accounts."
           INSTRUCTIONS=$(echo "$INSTRUCTIONS" | sed 's/"/\\"/g' | tr -d '\n')
-          echo "instructions=$INSTRUCTIONS" >> $GITHUB_OUTPUT
+          echo "instructions=$INSTRUCTIONS" >> "$GITHUB_OUTPUT"
 
       # ---------- 11.  run scan ----------
       - name: Run Strix Security Scan
         id: strix
-        timeout-minutes: ${{ steps.vars.outputs.timeout }}   # <-- safe, no '+' inside ${{ }}
+        timeout-minutes: ${{ steps.vars.outputs.timeout }}
         continue-on-error: true
         env:
           STRIXDB_TOKEN: ${{ secrets.STRIXDB_TOKEN }}
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           STRIX_LLM: ${{ github.event.inputs.model || 'qwen3-coder-plus' }}
           LLM_API_BASE: ${{ steps.cliproxy.outputs.endpoint }}
+          CUSTOM_LLM_PROVIDER: ${{ env.CUSTOM_LLM_PROVIDER }}
         run: |
-          set +e
+          set +euo pipefail
           echo "::group::Running Strix Security Scan"
           TARGET="${{ github.event.inputs.target }}"
           TIMEFRAME="${{ github.event.inputs.timeframe || env.DEFAULT_TIMEFRAME }}"
@@ -339,29 +346,29 @@ jobs:
             CMD="$CMD --instruction \"$INSTRUCTIONS\""
           fi
           timeout ${TIMEFRAME}m bash -c "$CMD" 2>&1 | tee strix_output.log
-          EXIT_CODE=$?
+          EXIT_CODE=${PIPESTATUS[0]}
           VULN_COUNT=$(grep -ciE "vulnerability|VULNERABILITY|CVE-|critical|high.*severity" strix_output.log 2>/dev/null || echo "0")
           case $EXIT_CODE in
             0)
               echo "Scan completed successfully"
-              echo "scan_completed=true" >> $GITHUB_OUTPUT
+              echo "scan_completed=true" >> "$GITHUB_OUTPUT"
               ;;
             2)
               echo "Scan completed with vulnerabilities found"
-              echo "scan_completed=true" >> $GITHUB_OUTPUT
+              echo "scan_completed=true" >> "$GITHUB_OUTPUT"
               ;;
             124)
               echo "Scan completed (timeframe exhausted)"
-              echo "timed_out=true" >> $GITHUB_OUTPUT
-              echo "scan_completed=true" >> $GITHUB_OUTPUT
+              echo "timed_out=true" >> "$GITHUB_OUTPUT"
+              echo "scan_completed=true" >> "$GITHUB_OUTPUT"
               ;;
             *)
               echo "Scan completed with exit code: $EXIT_CODE"
-              echo "scan_completed=true" >> $GITHUB_OUTPUT
+              echo "scan_completed=true" >> "$GITHUB_OUTPUT"
               ;;
           esac
-          echo "vulnerabilities_found=$VULN_COUNT" >> $GITHUB_OUTPUT
-          echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
+          echo "vulnerabilities_found=$VULN_COUNT" >> "$GITHUB_OUTPUT"
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
           echo "::endgroup::"
           exit 0
 
@@ -369,6 +376,7 @@ jobs:
       - name: Stop CLIProxyAPI Server
         if: always()
         run: |
+          set -euo pipefail
           echo "::group::Stopping CLIProxyAPI"
           AUTH_DIR="$HOME/.cli-proxy-api"
           if [ -f "$AUTH_DIR/cliproxy.pid" ]; then
@@ -400,6 +408,7 @@ jobs:
       - name: Create Security Summary
         if: always()
         run: |
+          set -euo pipefail
           TIMEFRAME="${{ github.event.inputs.timeframe || env.DEFAULT_TIMEFRAME }}"
           VULNS="${{ steps.strix.outputs.vulnerabilities_found }}"
           TIMED_OUT="${{ steps.strix.outputs.timed_out }}"
@@ -439,7 +448,7 @@ jobs:
             echo "- Continuous Scanning (doesn't stop on first find)"
             echo ""
             echo "See workflow artifacts for detailed results."
-          } >> $GITHUB_STEP_SUMMARY
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # ---------- 15.  PR comment ----------
       - name: Comment on PR with Results
