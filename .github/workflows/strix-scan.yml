@@ -102,7 +102,8 @@ jobs:
             echo "Invalid timeframe: $TF" >&2
             exit 1
           fi
-          echo "timeout=$(( TF + 30 ))" >> "$GITHUB_OUTPUT"
+          TIMEOUT=$(( TF + 30 ))
+          echo "timeout=$TIMEOUT" >> "$GITHUB_OUTPUT"
 
       - name: Checkout Repository
         uses: actions/checkout@v4
