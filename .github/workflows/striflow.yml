@@ -1,4 +1,4 @@
-name: StriFlow - Integrated Strix Security Scan
+name: StriFlow Integrated Strix Security Scan
 
 on:
   workflow_dispatch:
