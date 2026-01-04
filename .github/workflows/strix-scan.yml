@@ -395,7 +395,7 @@ EOF
             config.json
           retention-days: 30
 
-      - name: Create Security Summary
+            - name: Create Security Summary
         if: always()
         run: |
           set -euo pipefail
