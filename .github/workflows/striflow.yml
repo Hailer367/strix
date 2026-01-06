@@ -87,7 +87,6 @@ jobs:
   striflow-scan:
     name: StriFlow Security Scan
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ fromJSON(github.event.inputs.timeframe || '60') + 30 }}
 
     permissions:
       contents: read
@@ -95,6 +94,17 @@ jobs:
       pull-requests: write
 
     steps:
+      - name: Compute timeout
+        id: vars
+        run: |
+          set -euo pipefail
+          TF="${{ github.event.inputs.timeframe || env.DEFAULT_TIMEFRAME }}"
+          if ! [[ "$TF" =~ ^[0-9]+$ ]]; then
+            echo "Invalid timeframe: $TF" >&2
+            exit 1
+          fi
+          echo "timeout=$(( TF + 30 ))" >> "$GITHUB_OUTPUT"
+
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
@@ -269,12 +279,13 @@ jobs:
           # Set default for enable_strixdb if empty
           [ -z "$ENABLE_STRIXDB" ] && ENABLE_STRIXDB="true"
           
+          # Use openai/ prefix for LiteLLM compatibility with CLIProxyAPI
           for CONFIG_DIR in "$GITHUB_WORKSPACE" "/tmp/strix"; do
             cat > "$CONFIG_DIR/config.json" <<EOF
           {
             "api": {
               "endpoint": "${{ steps.cliproxy.outputs.endpoint }}",
-              "model": "$MODEL"
+              "model": "openai/$MODEL"
             },
             "timeframe": {
               "duration_minutes": $TIMEFRAME,
@@ -329,12 +340,17 @@ jobs:
 
       - name: Run Strix Security Scan
         id: strix
+        timeout-minutes: ${{ fromJSON(steps.vars.outputs.timeout) }}
         continue-on-error: true
         env:
           STRIXDB_TOKEN: ${{ secrets.STRIXDB_TOKEN }}
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
-          STRIX_LLM: ${{ github.event.inputs.model || 'qwen3-coder-plus' }}
+          # Use 'openai/' prefix for LiteLLM to use OpenAI-compatible API format
+          STRIX_LLM: openai/${{ github.event.inputs.model || 'qwen3-coder-plus' }}
           LLM_API_BASE: ${{ steps.cliproxy.outputs.endpoint }}
+          OPENAI_API_KEY: sk-dummy-key-for-cliproxy
+          OPENAI_API_BASE: ${{ steps.cliproxy.outputs.endpoint }}
+          LITELLM_DROP_PARAMS: 'true'
         run: |
           set +e
           echo "::group::Running Strix Security Scan"
