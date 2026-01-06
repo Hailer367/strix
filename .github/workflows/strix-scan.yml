@@ -257,7 +257,8 @@ jobs:
           pip install -q poetry
           poetry config virtualenvs.create false
           poetry install --no-interaction --quiet
-          python -m strix.interface.main --help > /dev/null 2>&1 || echo "Strix CLI loaded"
+          # Suppress the RuntimeWarning by using the package entry point properly
+          python -c "from strix.interface.main import app; print('Strix CLI loaded')" 2>/dev/null || echo "Strix CLI loaded"
           echo "Strix installation complete"
           echo "::endgroup::"
 
@@ -420,12 +421,13 @@ jobs:
           [ -z "$ENABLE_STRIXDB" ] && ENABLE_STRIXDB="true"
           
           # Create proper JSON config for both locations
+          # Use openai/ prefix for LiteLLM compatibility with CLIProxyAPI
           for CONFIG_DIR in "$GITHUB_WORKSPACE" "/tmp/strix"; do
             cat > "$CONFIG_DIR/config.json" << CONFIGEOF
           {
             "api": {
               "endpoint": "${{ steps.cliproxy.outputs.endpoint }}",
-              "model": "$MODEL"
+              "model": "openai/$MODEL"
             },
             "timeframe": {
               "duration_minutes": $TIMEFRAME,
@@ -471,13 +473,19 @@ jobs:
         continue-on-error: true
         env:
           STRIXDB_TOKEN: ${{ secrets.STRIXDB_TOKEN }}
+          # Use 'openai/' prefix for LiteLLM to use OpenAI-compatible API format
+          # CLIProxyAPI is OpenAI-compatible, so this tells LiteLLM how to format requests
           STRIX_LLM: openai/${{ github.event.inputs.model || 'qwen3-coder-plus' }}
           LLM_API_BASE: ${{ steps.cliproxy.outputs.endpoint }}
           CUSTOM_LLM_PROVIDER: openai
           OPENAI_API_KEY: sk-dummy-key-for-cliproxy
           OPENAI_API_BASE: ${{ steps.cliproxy.outputs.endpoint }}
-          STRIX_WEB_DASHBOARD: 'true'
+          # Disable Strix's internal dashboard since we're running an external one
+          # This prevents the "Address already in use" error on port 8080
+          STRIX_WEB_DASHBOARD: 'false'
           STRIX_DASHBOARD_PORT: ${{ env.DASHBOARD_PORT }}
+          # Set LiteLLM to drop unsupported params for better compatibility
+          LITELLM_DROP_PARAMS: 'true'
         run: |
           set +euo pipefail
           echo "::group::Running Strix Security Scan"
