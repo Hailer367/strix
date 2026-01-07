@@ -574,6 +574,16 @@ jobs:
           LITELLM_RETRY_DELAY: '2'
           # Shared state file for dashboard updates
           STRIX_DASHBOARD_STATE_FILE: /tmp/strix_dashboard_state.json
+          # Enable host network mode for Docker container to allow access to host services
+          # This fixes connectivity issues where tools can't reach CLIProxyAPI, search APIs, etc.
+          STRIX_USE_HOST_NETWORK: 'true'
+          # Pass search API keys if configured (will be propagated to Docker container)
+          PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          SERPAPI_API_KEY: ${{ secrets.SERPAPI_API_KEY }}
+          BRAVE_API_KEY: ${{ secrets.BRAVE_API_KEY }}
+          GOOGLE_CSE_API_KEY: ${{ secrets.GOOGLE_CSE_API_KEY }}
+          GOOGLE_CSE_ID: ${{ secrets.GOOGLE_CSE_ID }}
         run: |
           set +euo pipefail
           echo "::group::Running Strix Security Scan"

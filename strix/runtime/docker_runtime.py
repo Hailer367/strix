@@ -5,7 +5,7 @@ import secrets
 import socket
 import time
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import docker
 from docker.errors import DockerException, ImageNotFound, NotFound
@@ -15,7 +15,25 @@ from .runtime import AbstractRuntime, SandboxInfo
 
 
 STRIX_IMAGE = os.getenv("STRIX_IMAGE", "ghcr.io/usestrix/strix-sandbox:0.1.10")
+# Enable host networking in CI environments for proper connectivity
+USE_HOST_NETWORK = os.getenv("STRIX_USE_HOST_NETWORK", "false").lower() == "true"
 logger = logging.getLogger(__name__)
+
+# Environment variables to pass to the container for external service connectivity
+PASSED_ENV_VARS = [
+    # Search API keys
+    "PERPLEXITY_API_KEY",
+    "TAVILY_API_KEY",
+    "SERPAPI_API_KEY",
+    "GOOGLE_CSE_API_KEY",
+    "GOOGLE_CSE_ID",
+    "BRAVE_API_KEY",
+    # StrixDB token
+    "STRIXDB_TOKEN",
+    # CI/CD markers
+    "CI",
+    "GITHUB_ACTIONS",
+]
 
 
 class DockerRuntime(AbstractRuntime):
@@ -104,26 +122,49 @@ class DockerRuntime(AbstractRuntime):
                 self._tool_server_port = tool_server_port
                 self._tool_server_token = tool_server_token
 
-                container = self.client.containers.run(
-                    STRIX_IMAGE,
-                    command="sleep infinity",
-                    detach=True,
-                    name=container_name,
-                    hostname=f"strix-scan-{scan_id}",
-                    ports={
+                # Build environment variables for container
+                container_env = {
+                    "PYTHONUNBUFFERED": "1",
+                    "CAIDO_PORT": str(caido_port),
+                    "TOOL_SERVER_PORT": str(tool_server_port),
+                    "TOOL_SERVER_TOKEN": tool_server_token,
+                }
+                
+                # Pass through important environment variables for connectivity
+                for env_var in PASSED_ENV_VARS:
+                    value = os.getenv(env_var)
+                    if value:
+                        container_env[env_var] = value
+                        logger.debug(f"Passing {env_var} to container")
+                
+                # Configure networking based on environment
+                run_kwargs: dict[str, Any] = {
+                    "image": STRIX_IMAGE,
+                    "command": "sleep infinity",
+                    "detach": True,
+                    "name": container_name,
+                    "cap_add": ["NET_ADMIN", "NET_RAW"],
+                    "labels": {"strix-scan-id": scan_id},
+                    "environment": container_env,
+                    "tty": True,
+                }
+                
+                if USE_HOST_NETWORK:
+                    # Use host network for CI environments (GitHub Actions)
+                    # This allows the container to access localhost services on the host
+                    run_kwargs["network_mode"] = "host"
+                    logger.info("Using host network mode for CI connectivity")
+                else:
+                    # Standard bridge networking with port forwarding
+                    run_kwargs["hostname"] = f"strix-scan-{scan_id}"
+                    run_kwargs["ports"] = {
                         f"{caido_port}/tcp": caido_port,
                         f"{tool_server_port}/tcp": tool_server_port,
-                    },
-                    cap_add=["NET_ADMIN", "NET_RAW"],
-                    labels={"strix-scan-id": scan_id},
-                    environment={
-                        "PYTHONUNBUFFERED": "1",
-                        "CAIDO_PORT": str(caido_port),
-                        "TOOL_SERVER_PORT": str(tool_server_port),
-                        "TOOL_SERVER_TOKEN": tool_server_token,
-                    },
-                    tty=True,
-                )
+                    }
+                    # Add extra_hosts to allow container to reach host services
+                    run_kwargs["extra_hosts"] = {"host.docker.internal": "host-gateway"}
+                
+                container = self.client.containers.run(**run_kwargs)
 
                 self._scan_container = container
                 logger.info("Created container %s for scan %s", container.id, scan_id)
