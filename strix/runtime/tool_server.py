@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import logging
 import os
+import queue
 import signal
 import sys
 from multiprocessing import Process, Queue
@@ -16,6 +17,8 @@ from pydantic import BaseModel, ValidationError
 
 
 SANDBOX_MODE = os.getenv("STRIX_SANDBOX_MODE", "false").lower() == "true"
+# Timeout for tool execution in seconds (default: 60s, can be overridden)
+TOOL_EXECUTION_TIMEOUT = float(os.getenv("STRIX_TOOL_EXECUTION_TIMEOUT", "60"))
 if not SANDBOX_MODE:
     raise RuntimeError("Tool server should only run in sandbox mode (STRIX_SANDBOX_MODE=true)")
 
@@ -121,6 +124,11 @@ def ensure_agent_process(agent_id: str) -> tuple[Queue[Any], Queue[Any]]:
     return agent_queues[agent_id]["request"], agent_queues[agent_id]["response"]
 
 
+def _queue_get_with_timeout(response_queue: Queue[Any], timeout: float) -> Any:
+    """Get from queue with timeout. Raises queue.Empty if timeout."""
+    return response_queue.get(timeout=timeout)
+
+
 @app.post("/execute", response_model=ToolExecutionResponse)
 async def execute_tool(
     request: ToolExecutionRequest, credentials: HTTPAuthorizationCredentials = security_dependency
@@ -133,12 +141,21 @@ async def execute_tool(
 
     try:
         loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(None, response_queue.get)
+        # Add timeout to prevent indefinite hanging on tool execution
+        response = await asyncio.wait_for(
+            loop.run_in_executor(None, _queue_get_with_timeout, response_queue, TOOL_EXECUTION_TIMEOUT),
+            timeout=TOOL_EXECUTION_TIMEOUT + 5  # Extra buffer for executor overhead
+        )
 
         if "error" in response:
             return ToolExecutionResponse(error=response["error"])
         return ToolExecutionResponse(result=response.get("result"))
 
+    except (asyncio.TimeoutError, queue.Empty) as e:
+        return ToolExecutionResponse(
+            error=f"Tool execution timed out after {TOOL_EXECUTION_TIMEOUT}s. "
+                  f"The tool '{request.tool_name}' may be hanging or taking too long."
+        )
     except (RuntimeError, ValueError, OSError) as e:
         return ToolExecutionResponse(error=f"Worker error: {e}")
 

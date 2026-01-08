@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import logging
+import os
 import threading
 from pathlib import Path
 from typing import Any, cast
@@ -15,6 +16,10 @@ MAX_CONSOLE_LOG_LENGTH = 30_000
 MAX_INDIVIDUAL_LOG_LENGTH = 1_000
 MAX_CONSOLE_LOGS_COUNT = 200
 MAX_JS_RESULT_LENGTH = 5_000
+
+# Timeout values for browser operations (in seconds)
+BROWSER_NAVIGATION_TIMEOUT = int(os.getenv("STRIX_BROWSER_NAVIGATION_TIMEOUT", "30"))
+BROWSER_OPERATION_TIMEOUT = int(os.getenv("STRIX_BROWSER_OPERATION_TIMEOUT", "45"))
 
 
 class BrowserInstance:
@@ -48,12 +53,22 @@ class BrowserInstance:
         while self._loop is None:
             threading.Event().wait(0.01)
 
-    def _run_async(self, coro: Any) -> dict[str, Any]:
+    def _run_async(self, coro: Any, timeout: int | None = None) -> dict[str, Any]:
         if not self._loop or not self.is_running:
             raise RuntimeError("Browser instance is not running")
 
+        # Use configurable timeout, default to BROWSER_OPERATION_TIMEOUT
+        actual_timeout = timeout if timeout is not None else BROWSER_OPERATION_TIMEOUT
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        return cast("dict[str, Any]", future.result(timeout=30))  # 30 second timeout
+        try:
+            return cast("dict[str, Any]", future.result(timeout=actual_timeout))
+        except TimeoutError:
+            # Cancel the coroutine if it's still running
+            future.cancel()
+            raise RuntimeError(
+                f"Browser operation timed out after {actual_timeout}s. "
+                f"The page may be unresponsive or taking too long to load."
+            ) from None
 
     async def _setup_console_logging(self, page: Page, tab_id: str) -> None:
         self.console_logs[tab_id] = []
@@ -100,6 +115,10 @@ class BrowserInstance:
         )
 
         page = await self.context.new_page()
+        # Set default navigation timeout for the page
+        page.set_default_navigation_timeout(BROWSER_NAVIGATION_TIMEOUT * 1000)
+        page.set_default_timeout(BROWSER_OPERATION_TIMEOUT * 1000)
+        
         tab_id = f"tab_{self._next_tab_id}"
         self._next_tab_id += 1
         self.pages[tab_id] = page
@@ -108,7 +127,7 @@ class BrowserInstance:
         await self._setup_console_logging(page, tab_id)
 
         if url:
-            await page.goto(url, wait_until="domcontentloaded")
+            await page.goto(url, wait_until="domcontentloaded", timeout=BROWSER_NAVIGATION_TIMEOUT * 1000)
 
         return await self._get_page_state(tab_id)
 
@@ -165,7 +184,7 @@ class BrowserInstance:
             raise ValueError(f"Tab '{tab_id}' not found")
 
         page = self.pages[tab_id]
-        await page.goto(url, wait_until="domcontentloaded")
+        await page.goto(url, wait_until="domcontentloaded", timeout=BROWSER_NAVIGATION_TIMEOUT * 1000)
 
         return await self._get_page_state(tab_id)
 
@@ -240,7 +259,7 @@ class BrowserInstance:
             raise ValueError(f"Tab '{tab_id}' not found")
 
         page = self.pages[tab_id]
-        await page.go_back(wait_until="domcontentloaded")
+        await page.go_back(wait_until="domcontentloaded", timeout=BROWSER_NAVIGATION_TIMEOUT * 1000)
 
         return await self._get_page_state(tab_id)
 
@@ -256,7 +275,7 @@ class BrowserInstance:
             raise ValueError(f"Tab '{tab_id}' not found")
 
         page = self.pages[tab_id]
-        await page.go_forward(wait_until="domcontentloaded")
+        await page.go_forward(wait_until="domcontentloaded", timeout=BROWSER_NAVIGATION_TIMEOUT * 1000)
 
         return await self._get_page_state(tab_id)
 
@@ -269,6 +288,10 @@ class BrowserInstance:
             raise ValueError("Browser not launched")
 
         page = await self.context.new_page()
+        # Set default timeouts for the new page
+        page.set_default_navigation_timeout(BROWSER_NAVIGATION_TIMEOUT * 1000)
+        page.set_default_timeout(BROWSER_OPERATION_TIMEOUT * 1000)
+        
         tab_id = f"tab_{self._next_tab_id}"
         self._next_tab_id += 1
         self.pages[tab_id] = page
@@ -277,7 +300,7 @@ class BrowserInstance:
         await self._setup_console_logging(page, tab_id)
 
         if url:
-            await page.goto(url, wait_until="domcontentloaded")
+            await page.goto(url, wait_until="domcontentloaded", timeout=BROWSER_NAVIGATION_TIMEOUT * 1000)
 
         return await self._get_page_state(tab_id)
 

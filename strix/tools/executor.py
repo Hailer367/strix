@@ -17,7 +17,9 @@ from .registry import (
 )
 
 
-SANDBOX_EXECUTION_TIMEOUT = float(os.getenv("STRIX_SANDBOX_EXECUTION_TIMEOUT", "500"))
+# Reduced from 500s to 90s default - tools shouldn't hang for 8+ minutes
+# This timeout must be greater than STRIX_TOOL_EXECUTION_TIMEOUT in tool_server.py
+SANDBOX_EXECUTION_TIMEOUT = float(os.getenv("STRIX_SANDBOX_EXECUTION_TIMEOUT", "90"))
 SANDBOX_CONNECT_TIMEOUT = float(os.getenv("STRIX_SANDBOX_CONNECT_TIMEOUT", "10"))
 
 

@@ -732,6 +732,12 @@ jobs:
           STRIX_DASHBOARD_STATE_FILE: /tmp/strix_dashboard_state.json
           # Enable host network mode for Docker container
           STRIX_USE_HOST_NETWORK: 'true'
+          # Timeout settings to prevent tools from hanging indefinitely
+          # These prevent the agent from getting stuck on slow/unresponsive operations
+          STRIX_TOOL_EXECUTION_TIMEOUT: '60'     # Timeout per tool execution in sandbox (seconds)
+          STRIX_SANDBOX_EXECUTION_TIMEOUT: '90'  # Timeout for sandbox HTTP requests (seconds)
+          STRIX_BROWSER_NAVIGATION_TIMEOUT: '30' # Browser page navigation timeout (seconds)
+          STRIX_BROWSER_OPERATION_TIMEOUT: '45'  # General browser operation timeout (seconds)
           # Pass search API keys if configured
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
