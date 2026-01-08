@@ -263,6 +263,7 @@ jobs:
 
       - name: Setup Direct CLIProxyAPI Environment
         run: |
+          set -euo pipefail
           echo "::group::Setting up Direct CLIProxyAPI environment (NO LiteLLM)"
           
           # Direct CLIProxyAPI mode - NO LiteLLM dependency
@@ -275,24 +276,73 @@ jobs:
           
           # Test the endpoint directly
           echo "Testing CLIProxyAPI endpoint directly..."
-          curl -s "${{ steps.cliproxy.outputs.endpoint }}/models" | jq '.data | length' || echo "Could not get model count"
+          MODEL_COUNT=$(curl -s "${{ steps.cliproxy.outputs.endpoint }}/models" | jq '.data | length' 2>/dev/null || echo "0")
+          echo "Available models: $MODEL_COUNT"
           
-          # Test a simple completion request
-          echo "Testing direct chat completion..."
+          # Test a simple completion request - THIS IS CRITICAL
+          echo "Testing direct chat completion (validating Qwen token)..."
           RESPONSE=$(curl -s -X POST "${{ steps.cliproxy.outputs.endpoint }}/chat/completions" \
             -H "Content-Type: application/json" \
             -d '{
               "model": "${{ github.event.inputs.model || 'qwen3-coder-plus' }}",
               "messages": [{"role": "user", "content": "Say OK"}],
               "max_tokens": 10
-            }' 2>/dev/null || echo "{}")
+            }' 2>/dev/null || echo '{"error": "connection failed"}')
+          
+          echo "API Response: $RESPONSE"
+          
+          # Check for various error conditions
+          if echo "$RESPONSE" | jq -e '.error' > /dev/null 2>&1; then
+            ERROR_CODE=$(echo "$RESPONSE" | jq -r '.error.code // .error' 2>/dev/null || echo "unknown")
+            ERROR_MSG=$(echo "$RESPONSE" | jq -r '.error.message // .error' 2>/dev/null || echo "unknown error")
+            
+            echo ""
+            echo "╔══════════════════════════════════════════════════════════════╗"
+            echo "║  ❌ QWEN TOKEN VALIDATION FAILED                             ║"
+            echo "╠══════════════════════════════════════════════════════════════╣"
+            echo "║  Error Code: $ERROR_CODE"
+            echo "║  Error Message: $ERROR_MSG"
+            echo "╠══════════════════════════════════════════════════════════════╣"
+            
+            if [[ "$ERROR_CODE" == "invalid_api_key" ]] || [[ "$ERROR_MSG" == *"expired"* ]] || [[ "$ERROR_MSG" == *"invalid"* ]]; then
+              echo "║  📛 Your Qwen authentication token has EXPIRED or is INVALID ║"
+              echo "║                                                              ║"
+              echo "║  TO FIX THIS:                                                ║"
+              echo "║  1. Go to https://chat.qwen.ai and log in                    ║"
+              echo "║  2. Open browser DevTools (F12) → Application → Cookies     ║"
+              echo "║  3. Copy the new token values                                ║"
+              echo "║  4. Update your QWEN_TOKENS secret in GitHub                 ║"
+              echo "║  5. Re-run this workflow                                     ║"
+            elif [[ "$ERROR_MSG" == *"auth_unavailable"* ]] || [[ "$ERROR_MSG" == *"no auth"* ]]; then
+              echo "║  📛 No valid authentication found in CLIProxyAPI             ║"
+              echo "║                                                              ║"
+              echo "║  The Qwen token files were decrypted but may be corrupted    ║"
+              echo "║  or in an unexpected format.                                 ║"
+            else
+              echo "║  📛 Unknown authentication error                             ║"
+            fi
+            
+            echo "╚══════════════════════════════════════════════════════════════╝"
+            echo ""
+            echo "::error::Qwen token validation failed: $ERROR_MSG"
+            exit 1
+          fi
           
           if echo "$RESPONSE" | jq -e '.choices[0].message.content' > /dev/null 2>&1; then
-            echo "Direct CLIProxyAPI test successful!"
-            echo "$RESPONSE" | jq -r '.choices[0].message.content'
+            AI_RESPONSE=$(echo "$RESPONSE" | jq -r '.choices[0].message.content')
+            echo ""
+            echo "╔══════════════════════════════════════════════════════════════╗"
+            echo "║  ✅ QWEN TOKEN VALIDATED SUCCESSFULLY                        ║"
+            echo "╠══════════════════════════════════════════════════════════════╣"
+            echo "║  AI Response: $AI_RESPONSE"
+            echo "║  Model: ${{ github.event.inputs.model || 'qwen3-coder-plus' }}"
+            echo "║  Accounts: ${{ steps.decrypt.outputs.token_count }}"
+            echo "╚══════════════════════════════════════════════════════════════╝"
+            echo ""
           else
-            echo "::warning::Direct API test did not return expected format"
+            echo "::error::Unexpected response format from CLIProxyAPI"
             echo "Response: $RESPONSE"
+            exit 1
           fi
           echo "::endgroup::"
 
