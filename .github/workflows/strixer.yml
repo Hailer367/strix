@@ -300,14 +300,24 @@ jobs:
         run: |
           set -euo pipefail
           echo "::group::Installing Strix (Direct CLIProxyAPI Mode)"
-          git clone --depth 1 https://github.com/Hailer367/strix.git /tmp/strix
+          
+          # Use the already checked out repository instead of cloning again
+          # Copy to /tmp/strix for consistency with dashboard scripts
+          cp -r "$GITHUB_WORKSPACE" /tmp/strix
           cd /tmp/strix
+          
           pip install -q poetry
           poetry config virtualenvs.create false
           
-          # Install Strix with minimal dependencies (skip litellm if possible)
-          # For now install normally, the direct HTTP mode will bypass LiteLLM at runtime
-          poetry install --no-interaction --quiet
+          # Install Strix with all dependencies (litellm is optional now)
+          # Direct HTTP mode will bypass LiteLLM at runtime
+          poetry install --no-interaction --quiet 2>&1 || {
+            echo "Poetry install had issues, trying with pip fallback..."
+            pip install -e . --quiet
+          }
+          
+          # Set environment variable for direct API mode
+          echo "STRIX_DIRECT_API_MODE=true" >> "$GITHUB_ENV"
           
           # Verify installation
           python -c "from strix.interface.main import app; print('Strix CLI loaded')" 2>/dev/null || echo "Strix CLI loaded"
