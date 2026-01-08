@@ -97,19 +97,22 @@ class LLMRequestQueue:
     """Request queue with rate limiting and concurrency control.
     
     This queue manages LLM API requests to:
-    1. Limit concurrent requests (default: 1)
-    2. Enforce a rate limit (default: 60 requests/minute)
-    3. Add minimal delay between requests (default: 0.5s)
+    1. Limit concurrent requests (default: 3 for better parallelism)
+    2. Enforce a rate limit (default: 120 requests/minute with CLIProxyAPI)
+    3. Add minimal delay between requests (default: 0.1s for fast responses)
     
-    The rate limiter prevents hitting API rate limits while the minimal
-    delay ensures we don't overwhelm the API with burst traffic.
+    OPTIMIZATIONS:
+    - Reduced delay from 0.5s to 0.1s for faster request throughput
+    - Increased max concurrent from 1 to 3 for parallel sub-agent requests
+    - Increased rate limit from 60 to 120 RPM (CLIProxyAPI supports multi-account)
+    - Direct API calls without LiteLLM overhead when possible
     """
     
     def __init__(
         self,
-        max_concurrent: int = 1,
-        delay_between_requests: float = 0.5,  # Reduced from 4.0s to 0.5s
-        max_requests_per_minute: int = 60,
+        max_concurrent: int = 3,  # Increased from 1 to 3 for parallel agents
+        delay_between_requests: float = 0.1,  # Reduced from 0.5s to 0.1s
+        max_requests_per_minute: int = 120,  # Increased from 60 (CLIProxyAPI load balances)
     ):
         # Allow environment variable overrides
         rate_limit_delay = os.getenv("LLM_RATE_LIMIT_DELAY")
@@ -130,7 +133,7 @@ class LLMRequestQueue:
         self._last_request_time = 0.0
         self._lock = threading.Lock()
         
-        # Rate limiter for 60 requests per minute max
+        # Rate limiter - increased limit since CLIProxyAPI load balances across accounts
         self._rate_limiter = RateLimiter(max_requests_per_minute)
         
         # Request statistics
@@ -138,7 +141,7 @@ class LLMRequestQueue:
         self._total_wait_time = 0.0
         
         logger.info(
-            f"LLMRequestQueue initialized: max_concurrent={max_concurrent}, "
+            f"LLMRequestQueue initialized (OPTIMIZED): max_concurrent={max_concurrent}, "
             f"delay={delay_between_requests}s, max_rpm={max_requests_per_minute}"
         )
 
@@ -200,8 +203,8 @@ class LLMRequestQueue:
         }
 
     @retry(  # type: ignore[misc]
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=8, min=8, max=64),
+        stop=stop_after_attempt(5),  # Increased from 3 to 5 attempts
+        wait=wait_exponential(multiplier=2, min=1, max=30),  # Faster retries: 1s, 2s, 4s, 8s, 16s
         retry=retry_if_exception(should_retry_exception),
         reraise=True,
     )

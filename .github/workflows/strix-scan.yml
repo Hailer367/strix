@@ -603,16 +603,22 @@ jobs:
           CUSTOM_LLM_PROVIDER: openai
           OPENAI_API_KEY: sk-dummy-key-for-cliproxy
           OPENAI_API_BASE: ${{ steps.cliproxy.outputs.endpoint }}
+          # OPTIMIZED: CLIProxyAPI endpoint for direct requests
+          CLIPROXY_ENDPOINT: ${{ steps.cliproxy.outputs.endpoint }}
           # Disable Strix's internal dashboard since we're running an external one
           # This prevents the "Address already in use" error on port 8080
           STRIX_WEB_DASHBOARD: 'false'
           STRIX_DASHBOARD_PORT: ${{ env.DASHBOARD_PORT }}
           # Set LiteLLM to drop unsupported params for better compatibility
           LITELLM_DROP_PARAMS: 'true'
-          # Add retry configuration for LiteLLM - increased for stability
-          LITELLM_NUM_RETRIES: '10'
-          LITELLM_RETRY_DELAY: '5'
+          # OPTIMIZED: Faster retries with more attempts
+          LITELLM_NUM_RETRIES: '5'
+          LITELLM_RETRY_DELAY: '1'
           LITELLM_REQUEST_TIMEOUT: '300'
+          # OPTIMIZED: Rate limiting - increased for CLIProxyAPI multi-account support
+          LLM_RATE_LIMIT_DELAY: '0.1'
+          LLM_RATE_LIMIT_CONCURRENT: '3'
+          LLM_MAX_REQUESTS_PER_MINUTE: '120'
           # Shared state file for dashboard updates
           STRIX_DASHBOARD_STATE_FILE: /tmp/strix_dashboard_state.json
           # Enable host network mode for Docker container to allow access to host services

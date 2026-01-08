@@ -533,7 +533,19 @@ def stop_web_dashboard() -> None:
 
 
 def get_dashboard_html() -> str:
-    """Generate the dashboard HTML."""
+    """Generate the dashboard HTML.
+    
+    Uses the new modern React-based dashboard from dashboard_html.py
+    which provides a professional CLI-like developer interface.
+    """
+    try:
+        from .dashboard_html import get_dashboard_html as get_modern_dashboard
+        return get_modern_dashboard()
+    except ImportError:
+        # Fallback to legacy dashboard if import fails
+        pass
+    
+    # Legacy dashboard (kept as fallback)
     return '''<!DOCTYPE html>
 <html lang="en">
 <head>
