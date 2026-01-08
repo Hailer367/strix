@@ -116,6 +116,66 @@ def add_live_feed_entry(entry: dict[str, Any]) -> None:
             _web_dashboard_state["live_feed"] = _web_dashboard_state["live_feed"][-500:]
 
 
+def add_thinking_entry(
+    agent_id: str | None,
+    agent_name: str | None,
+    content: str,
+) -> None:
+    """Add a thinking/reasoning entry to the live feed.
+    
+    This shows the AI's internal reasoning process, similar to how
+    CLI-based agents like Claude Code display their thinking.
+    
+    Args:
+        agent_id: The agent's ID
+        agent_name: The agent's name
+        content: The thinking content (will be truncated if too long)
+    """
+    # Truncate very long thinking to keep feed readable
+    max_length = 500
+    if len(content) > max_length:
+        content = content[:max_length] + "..."
+    
+    add_live_feed_entry({
+        "type": "thinking",
+        "agent_id": agent_id,
+        "agent_name": agent_name,
+        "content": content,
+    })
+
+
+def add_agent_created_entry(
+    agent_id: str,
+    agent_name: str,
+    task: str,
+    parent_id: str | None = None,
+) -> None:
+    """Add an agent creation entry to the live feed."""
+    add_live_feed_entry({
+        "type": "agent_created",
+        "agent_id": agent_id,
+        "agent_name": agent_name,
+        "task": task[:200] if task else "",
+        "parent_id": parent_id,
+    })
+
+
+def add_error_entry(
+    agent_id: str | None,
+    agent_name: str | None,
+    error_message: str,
+    error_type: str = "error",
+) -> None:
+    """Add an error entry to the live feed."""
+    add_live_feed_entry({
+        "type": "error",
+        "agent_id": agent_id,
+        "agent_name": agent_name,
+        "message": error_message[:500] if error_message else "Unknown error",
+        "error_type": error_type,
+    })
+
+
 def add_tool_execution(tool_data: dict[str, Any]) -> None:
     """Add a tool execution to the state."""
     with _update_lock:

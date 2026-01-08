@@ -144,6 +144,18 @@ class BaseAgent(metaclass=AgentMeta):
 
         if self.state.parent_id is None and agents_graph_actions._root_agent_id is None:
             agents_graph_actions._root_agent_id = self.state.agent_id
+        
+        # Add agent creation entry to dashboard live feed
+        try:
+            from strix.dashboard import add_agent_created_entry
+            add_agent_created_entry(
+                agent_id=self.state.agent_id,
+                agent_name=self.state.agent_name,
+                task=self.state.task or "",
+                parent_id=self.state.parent_id,
+            )
+        except (ImportError, Exception):
+            pass  # Dashboard not available
 
     def cancel_current_execution(self) -> None:
         if self._current_task and not self._current_task.done():
@@ -415,6 +427,23 @@ class BaseAgent(metaclass=AgentMeta):
                 role="assistant",
                 agent_id=self.state.agent_id,
             )
+        
+        # Add thinking entry to dashboard for real-time visibility
+        # This shows AI reasoning like CLI-based agents (Claude Code, Codex, etc.)
+        try:
+            from strix.dashboard import add_thinking_entry
+            # Extract thinking content (text before tool calls)
+            thinking_content = content_stripped
+            if "<function=" in thinking_content:
+                thinking_content = thinking_content.split("<function=")[0].strip()
+            if thinking_content:
+                add_thinking_entry(
+                    agent_id=self.state.agent_id,
+                    agent_name=self.state.agent_name,
+                    content=thinking_content,
+                )
+        except (ImportError, Exception):
+            pass  # Dashboard not available
 
         actions = (
             response.tool_invocations

@@ -21,6 +21,9 @@ from .web_server import (
     add_live_feed_entry,
     add_tool_execution,
     add_chat_message,
+    add_thinking_entry,
+    add_agent_created_entry,
+    add_error_entry,
     get_dashboard_state,
 )
 from .web_integration import (
@@ -44,6 +47,9 @@ __all__ = [
     "add_live_feed_entry",
     "add_tool_execution",
     "add_chat_message",
+    "add_thinking_entry",
+    "add_agent_created_entry",
+    "add_error_entry",
     "get_dashboard_state",
     # Integration exports
     "WebDashboardIntegration",
