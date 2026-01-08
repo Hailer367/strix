@@ -311,16 +311,36 @@ jobs:
           
           # Install Strix with all dependencies (litellm is optional now)
           # Direct HTTP mode will bypass LiteLLM at runtime
-          poetry install --no-interaction --quiet 2>&1 || {
-            echo "Poetry install had issues, trying with pip fallback..."
-            pip install -e . --quiet
-          }
+          echo "Installing Strix dependencies with Poetry..."
+          if ! poetry install --no-interaction 2>&1; then
+            echo "::warning::Poetry install had issues, trying with pip fallback..."
+            echo "Installing with pip..."
+            pip install -e .
+          fi
+          
+          # Ensure critical dependencies are installed (in case of partial installation)
+          echo "Verifying critical dependencies..."
+          pip install jinja2 httpx tenacity requests pydantic rich docker textual xmltodict
           
           # Set environment variable for direct API mode
           echo "STRIX_DIRECT_API_MODE=true" >> "$GITHUB_ENV"
           
-          # Verify installation
-          python -c "from strix.interface.main import app; print('Strix CLI loaded')" 2>/dev/null || echo "Strix CLI loaded"
+          # Verify installation with proper error detection
+          echo "Verifying Strix installation..."
+          if ! python -c "from strix.interface.main import app; print('Strix CLI loaded successfully')"; then
+            echo "::error::Strix installation verification failed!"
+            echo "Checking for missing dependencies..."
+            python -c "import jinja2; print('jinja2 OK')" || echo "::error::jinja2 missing"
+            python -c "import httpx; print('httpx OK')" || echo "::error::httpx missing"
+            python -c "import tenacity; print('tenacity OK')" || echo "::error::tenacity missing"
+            python -c "import requests; print('requests OK')" || echo "::error::requests missing"
+            python -c "import pydantic; print('pydantic OK')" || echo "::error::pydantic missing"
+            python -c "import rich; print('rich OK')" || echo "::error::rich missing"
+            python -c "import docker; print('docker OK')" || echo "::error::docker missing"
+            python -c "import textual; print('textual OK')" || echo "::error::textual missing"
+            exit 1
+          fi
+          
           echo "Strix installation complete (Direct CLIProxyAPI Mode)"
           echo "::endgroup::"
 

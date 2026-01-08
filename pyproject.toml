@@ -55,6 +55,10 @@ rich = "*"
 docker = "^7.1.0"
 textual = "^4.0.0"
 xmltodict = "^0.13.0"
+# Jinja2 is required for prompt templates - explicitly listed since litellm is now optional
+jinja2 = "^3.1.2"
+# httpx is required for direct API mode HTTP requests
+httpx = "^0.28.0"
 
 # Optional LLM provider dependencies
 google-cloud-aiplatform = { version = ">=1.38", optional = true }
