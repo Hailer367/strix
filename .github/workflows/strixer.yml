@@ -346,6 +346,58 @@ jobs:
           fi
           echo "::endgroup::"
 
+      - name: Setup Node.js for Dashboard Frontend
+        if: ${{ github.event.inputs.enable_dashboard == 'true' || github.event.inputs.enable_dashboard == '' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: strix/dashboard/frontend/package-lock.json
+
+      - name: Build Next.js Dashboard Frontend
+        if: ${{ github.event.inputs.enable_dashboard == 'true' || github.event.inputs.enable_dashboard == '' }}
+        run: |
+          set +euo pipefail
+          echo "::group::Building Next.js Dashboard"
+          cd "$GITHUB_WORKSPACE/strix/dashboard/frontend"
+          
+          # Check if package.json exists
+          if [ ! -f "package.json" ]; then
+            echo "::warning::package.json not found. Skipping Next.js build, will use legacy dashboard."
+            echo "nextjs_built=false" >> "$GITHUB_ENV"
+            echo "::endgroup::"
+            exit 0
+          fi
+          
+          # Install dependencies with legacy peer deps to avoid conflicts
+          echo "Installing npm dependencies..."
+          # Try npm ci first (faster, requires package-lock.json), fallback to npm install
+          if [ -f "package-lock.json" ]; then
+            npm ci --legacy-peer-deps --no-audit --no-fund 2>&1 | tail -20 || npm install --legacy-peer-deps --no-audit --no-fund 2>&1 | tail -20
+          else
+            npm install --legacy-peer-deps --no-audit --no-fund 2>&1 | tail -20
+          fi
+          
+          # Build Next.js app for static export
+          echo "Building Next.js application..."
+          if npm run build 2>&1; then
+            # Verify build output exists
+            if [ -d "out" ] && [ -f "out/index.html" ]; then
+              echo "✅ Next.js dashboard built successfully"
+              echo "Build output size: $(du -sh out | cut -f1)"
+              echo "nextjs_built=true" >> "$GITHUB_ENV"
+            else
+              echo "::warning::Build completed but output not found. Using legacy dashboard."
+              echo "nextjs_built=false" >> "$GITHUB_ENV"
+            fi
+          else
+            echo "::warning::Next.js build failed. Will use legacy dashboard as fallback."
+            echo "Build errors (last 30 lines):"
+            npm run build 2>&1 | tail -30 || true
+            echo "nextjs_built=false" >> "$GITHUB_ENV"
+          fi
+          echo "::endgroup::"
+
       - name: Install Strix (No LiteLLM)
         run: |
           set -euo pipefail
@@ -353,6 +405,7 @@ jobs:
           
           # Use the already checked out repository instead of cloning again
           # Copy to /tmp/strix for consistency with dashboard scripts
+          # This copies the entire workspace including the built Next.js frontend
           cp -r "$GITHUB_WORKSPACE" /tmp/strix
           cd /tmp/strix
           
@@ -547,30 +600,52 @@ jobs:
           echo "$DASHBOARD_PID" > /tmp/dashboard.pid
           
           # Wait for dashboard to start
-          sleep 5
+          sleep 8
           
           if ! kill -0 $DASHBOARD_PID 2>/dev/null; then
-            echo "Dashboard failed to start. Logs:"
+            echo "::error::Dashboard failed to start. Logs:"
             cat /tmp/dashboard.log || true
             echo "Continuing without dashboard..."
             echo "dashboard_enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::endgroup::"
             exit 0
           fi
           
           # Verify dashboard is responding
-          for i in {1..10}; do
+          DASHBOARD_READY=false
+          for i in {1..15}; do
             if curl -s "http://localhost:${{ env.DASHBOARD_PORT }}/health" > /dev/null 2>&1; then
-              echo "Dashboard is healthy!"
+              echo "✅ Dashboard is healthy and responding!"
+              DASHBOARD_READY=true
               break
             fi
-            echo "Waiting for dashboard... (attempt $i/10)"
+            echo "Waiting for dashboard to be ready... (attempt $i/15)"
             sleep 2
           done
+          
+          if [ "$DASHBOARD_READY" = "false" ]; then
+            echo "::warning::Dashboard started but not responding to health checks"
+            echo "Dashboard logs:"
+            tail -30 /tmp/dashboard.log || true
+          fi
+          
+          # Test dashboard homepage
+          if curl -s "http://localhost:${{ env.DASHBOARD_PORT }}/" > /dev/null 2>&1; then
+            echo "✅ Dashboard homepage accessible"
+          fi
           
           echo "dashboard_pid=$DASHBOARD_PID" >> "$GITHUB_OUTPUT"
           echo "dashboard_enabled=true" >> "$GITHUB_OUTPUT"
           echo "state_file=$SHARED_STATE_FILE" >> "$GITHUB_OUTPUT"
-          echo "Dashboard started on port ${{ env.DASHBOARD_PORT }}"
+          echo ""
+          echo "=========================================="
+          echo "🦉 Dashboard Server Status"
+          echo "=========================================="
+          echo "Port: ${{ env.DASHBOARD_PORT }}"
+          echo "PID: $DASHBOARD_PID"
+          echo "State File: $SHARED_STATE_FILE"
+          echo "Next.js Build: ${NEXTJS_BUILT:-unknown}"
+          echo "=========================================="
           echo "::endgroup::"
 
       - name: Start Dashboard Tunnel
@@ -604,41 +679,54 @@ jobs:
             cat /tmp/tunnel.log || true
             echo "dashboard_url=" >> "$GITHUB_OUTPUT"
           else
-            echo "=========================================="
-            echo "🌐 LIVE DASHBOARD URL"
-            echo "=========================================="
             echo ""
-            echo "  $DASHBOARD_URL"
+            echo "╔══════════════════════════════════════════════════════════════╗"
+            echo "║                                                              ║"
+            echo "║  🌐 LIVE DASHBOARD URL - CLICK TO ACCESS                    ║"
+            echo "║                                                              ║"
+            echo "║  $DASHBOARD_URL"
+            echo "║                                                              ║"
+            echo "║  Features Available:                                         ║"
+            echo "║  ✅ Real-time agent activity monitoring                      ║"
+            echo "║  ✅ Advanced collaboration network graph                     ║"
+            echo "║  ✅ Vulnerability discovery tracking                         ║"
+            echo "║  ✅ Tool execution history                                   ║"
+            echo "║  ✅ Resource usage analytics                                 ║"
+            echo "║  ✅ Multi-agent collaboration view                           ║"
+            echo "║  ✅ Export functionality (JSON/CSV)                          ║"
+            echo "║                                                              ║"
+            echo "╚══════════════════════════════════════════════════════════════╝"
             echo ""
-            echo "=========================================="
-            echo "Open this URL in your browser to monitor"
-            echo "the scan progress in real-time!"
-            echo "=========================================="
+            echo "::notice title=Dashboard Available::Dashboard is accessible at $DASHBOARD_URL"
             echo "dashboard_url=$DASHBOARD_URL" >> "$GITHUB_OUTPUT"
           fi
           
           echo "tunnel_pid=$TUNNEL_PID" >> "$GITHUB_OUTPUT"
           echo "::endgroup::"
 
-      - name: Display Dashboard URL
+      - name: Display Dashboard URL in Summary
         if: ${{ steps.tunnel.outputs.dashboard_url != '' }}
         run: |
           echo ""
           echo "╔══════════════════════════════════════════════════════════════╗"
           echo "║                                                              ║"
-          echo "║  🦉 STRIXER LIVE DASHBOARD                                   ║"
+          echo "║  🦉 STRIXER ADVANCED DASHBOARD                               ║"
           echo "║                                                              ║"
-          echo "║  Monitor your scan in real-time at:                          ║"
+          echo "║  ⚡ Next.js Dashboard with Advanced Features                 ║"
           echo "║                                                              ║"
+          echo "║  📊 LIVE URL:                                                ║"
           echo "║  ${{ steps.tunnel.outputs.dashboard_url }}"
           echo "║                                                              ║"
           echo "║  Features:                                                   ║"
           echo "║  • Real-time agent activity feed                             ║"
+          echo "║  • 🆕 Advanced collaboration network graph                   ║"
           echo "║  • Multi-agent collaboration view                            ║"
-          echo "║  • Vulnerability discoveries                                 ║"
-          echo "║  • Tool execution history                                    ║"
+          echo "║  • Vulnerability discoveries with severity                   ║"
+          echo "║  • Tool execution history with details                       ║"
           echo "║  • Time remaining countdown                                  ║"
-          echo "║  • Resource usage stats                                      ║"
+          echo "║  • Resource usage analytics (tokens, cost)                   ║"
+          echo "║  • Historical data visualization                             ║"
+          echo "║  • Export functionality (JSON/CSV)                           ║"
           echo "║                                                              ║"
           echo "║  MODE: Direct CLIProxyAPI (No LiteLLM)                        ║"
           echo "║                                                              ║"

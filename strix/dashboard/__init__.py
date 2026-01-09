@@ -11,6 +11,7 @@ including:
 """
 
 from .dashboard import Dashboard, DashboardWidget
+from .history import HistoricalDataTracker, get_historical_tracker
 from .time_tracker import TimeTracker
 from .web_server import (
     WebDashboardServer,
@@ -37,6 +38,8 @@ from .web_integration import (
 __all__ = [
     "Dashboard",
     "DashboardWidget",
+    "HistoricalDataTracker",
+    "get_historical_tracker",
     "TimeTracker",
     # Web dashboard exports
     "WebDashboardServer",
