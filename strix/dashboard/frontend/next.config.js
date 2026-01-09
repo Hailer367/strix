@@ -9,10 +9,9 @@ const nextConfig = {
   },
   trailingSlash: true,
   webpack: (config) => {
-    // Add path alias resolution for @/ imports
     config.resolve.alias = {
       ...config.resolve.alias,
-      '@': path.resolve(__dirname, './'),
+      '@': path.resolve(__dirname),
     }
     return config
   },
