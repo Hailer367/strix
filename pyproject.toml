@@ -63,6 +63,9 @@ httpx = "^0.28.0"
 # Optional LLM provider dependencies
 google-cloud-aiplatform = { version = ">=1.38", optional = true }
 
+# Optional observability/tracing
+opik = { version = ">=1.0.0", optional = true }
+
 # Sandbox-only dependencies (only needed inside Docker container)
 fastapi = { version = "*", optional = true }
 uvicorn = { version = "*", optional = true }
@@ -78,6 +81,7 @@ numpydoc = { version = "^1.8.0", optional = true }
 vertex = ["google-cloud-aiplatform"]
 sandbox = ["fastapi", "uvicorn", "ipython", "openhands-aci", "playwright", "gql", "pyte", "libtmux", "numpydoc"]
 litellm = ["litellm"]
+opik = ["opik"]
 
 [tool.poetry.group.dev.dependencies]
 # Type checking and static analysis
@@ -150,6 +154,7 @@ module = [
     "pyte.*",
     "libtmux.*",
     "pytest.*",
+    "opik.*",
 ]
 ignore_missing_imports = true
 
