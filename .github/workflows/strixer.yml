@@ -352,7 +352,7 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: strix/dashboard/frontend/package-lock.json
+          cache-dependency-path: strix/dashboard/frontend/package*.json
 
       - name: Build Next.js Dashboard Frontend
         if: ${{ github.event.inputs.enable_dashboard == 'true' || github.event.inputs.enable_dashboard == '' }}
@@ -380,20 +380,26 @@ jobs:
           
           # Build Next.js app for static export
           echo "Building Next.js application..."
-          if npm run build 2>&1; then
+          BUILD_OUTPUT=$(npm run build 2>&1)
+          BUILD_EXIT_CODE=$?
+          
+          if [ $BUILD_EXIT_CODE -eq 0 ]; then
             # Verify build output exists
             if [ -d "out" ] && [ -f "out/index.html" ]; then
               echo "✅ Next.js dashboard built successfully"
               echo "Build output size: $(du -sh out | cut -f1)"
               echo "nextjs_built=true" >> "$GITHUB_ENV"
             else
-              echo "::warning::Build completed but output not found. Using legacy dashboard."
+              echo "::warning::Build completed but output not found at out/index.html"
+              echo "Contents of out directory:"
+              ls -la out/ 2>/dev/null || echo "out directory does not exist"
+              echo "Using legacy dashboard."
               echo "nextjs_built=false" >> "$GITHUB_ENV"
             fi
           else
-            echo "::warning::Next.js build failed. Will use legacy dashboard as fallback."
-            echo "Build errors (last 30 lines):"
-            npm run build 2>&1 | tail -30 || true
+            echo "::warning::Next.js build failed (exit code: $BUILD_EXIT_CODE). Will use legacy dashboard as fallback."
+            echo "Build errors:"
+            echo "$BUILD_OUTPUT" | tail -50
             echo "nextjs_built=false" >> "$GITHUB_ENV"
           fi
           echo "::endgroup::"
@@ -644,7 +650,7 @@ jobs:
           echo "Port: ${{ env.DASHBOARD_PORT }}"
           echo "PID: $DASHBOARD_PID"
           echo "State File: $SHARED_STATE_FILE"
-          echo "Next.js Build: ${NEXTJS_BUILT:-unknown}"
+          echo "Next.js Build: ${nextjs_built:-unknown}"
           echo "=========================================="
           echo "::endgroup::"
 
