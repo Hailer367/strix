@@ -357,7 +357,7 @@ jobs:
         run: |
           set +euo pipefail
           echo "::group::Building Next.js Dashboard"
-          cd "$GITHUB_WORKSPACE/strix/strix/dashboard/frontend"
+          cd "$GITHUB_WORKSPACE/strix/dashboard/frontend"
           
           # Check if package.json exists
           if [ ! -f "package.json" ]; then
