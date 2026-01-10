@@ -13,8 +13,8 @@ export function cn(...inputs: ClassValue[]) {
  * @param minutes - Duration in minutes
  * @returns Formatted string (e.g., "1h 30m", "45m", "2h")
  */
-export function formatDuration(minutes: number): string {
-  if (minutes < 0) return '0m'
+export function formatDuration(minutes: number | null | undefined): string {
+  if (minutes == null || isNaN(minutes) || minutes < 0) return '0m'
   
   const hours = Math.floor(minutes / 60)
   const mins = Math.round(minutes % 60)
@@ -32,36 +32,54 @@ export function formatDuration(minutes: number): string {
 
 /**
  * Format a timestamp or Date to a localized time string
- * @param date - Date object, timestamp string, or number
- * @returns Formatted time string (e.g., "2:30:45 PM")
+ * @param date - Date object, timestamp string, or number, or null/undefined
+ * @returns Formatted time string (e.g., "2:30:45 PM") or "--" if invalid
  */
-export function formatTime(date: Date | string | number): string {
-  const d = typeof date === 'string' || typeof date === 'number' 
-    ? new Date(date) 
-    : date
+export function formatTime(date: Date | string | number | null | undefined): string {
+  if (!date) return '--'
   
-  return d.toLocaleTimeString()
+  try {
+    const d = typeof date === 'string' || typeof date === 'number' 
+      ? new Date(date) 
+      : date
+    
+    if (isNaN(d.getTime())) {
+      return '--'
+    }
+    
+    return d.toLocaleTimeString()
+  } catch {
+    return '--'
+  }
 }
 
 /**
  * Format a timestamp to a relative time string
- * @param timestamp - ISO timestamp string or Date
+ * @param timestamp - ISO timestamp string or Date, or null/undefined
  * @returns Relative time string (e.g., "2 minutes ago", "just now")
  */
-export function formatRelativeTime(timestamp: string | Date): string {
-  const date = typeof timestamp === 'string' ? new Date(timestamp) : timestamp
-  const now = new Date()
-  const diffMs = now.getTime() - date.getTime()
-  const diffSecs = Math.floor(diffMs / 1000)
-  const diffMins = Math.floor(diffSecs / 60)
-  const diffHours = Math.floor(diffMins / 60)
+export function formatRelativeTime(timestamp: string | Date | null | undefined): string {
+  if (!timestamp) return '--'
   
-  if (diffSecs < 10) return 'just now'
-  if (diffSecs < 60) return `${diffSecs}s ago`
-  if (diffMins < 60) return `${diffMins}m ago`
-  if (diffHours < 24) return `${diffHours}h ago`
-  
-  return date.toLocaleDateString()
+  try {
+    const date = typeof timestamp === 'string' ? new Date(timestamp) : timestamp
+    if (isNaN(date.getTime())) return '--'
+    
+    const now = new Date()
+    const diffMs = now.getTime() - date.getTime()
+    const diffSecs = Math.floor(diffMs / 1000)
+    const diffMins = Math.floor(diffSecs / 60)
+    const diffHours = Math.floor(diffMins / 60)
+    
+    if (diffSecs < 10) return 'just now'
+    if (diffSecs < 60) return `${diffSecs}s ago`
+    if (diffMins < 60) return `${diffMins}m ago`
+    if (diffHours < 24) return `${diffHours}h ago`
+    
+    return date.toLocaleDateString()
+  } catch {
+    return '--'
+  }
 }
 
 /**

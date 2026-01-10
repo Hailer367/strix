@@ -32,7 +32,8 @@
     @apply border-border;
   }
   body {
-    @apply bg-gradient-to-br from-strix-darker via-strix-dark to-strix-dark text-foreground font-mono;
+    background: linear-gradient(to bottom right, hsl(222, 47%, 5%) 0%, hsl(222, 47%, 11%) 50%, hsl(222, 47%, 11%) 100%);
+    @apply text-foreground font-mono;
     background-attachment: fixed;
   }
   

@@ -22,6 +22,9 @@ export function useSSE(options: UseSSEOptions = {}) {
   const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null)
 
   const connect = useCallback(() => {
+    // Only run on client side
+    if (typeof window === 'undefined') return
+
     if (eventSourceRef.current) {
       eventSourceRef.current.close()
     }
@@ -43,20 +46,25 @@ export function useSSE(options: UseSSEOptions = {}) {
           onUpdate?.(data)
         } catch (err) {
           console.error('Failed to parse state:', err)
+          setError(err as Error)
         }
       })
 
       eventSource.addEventListener('update', (e) => {
         try {
           const data = JSON.parse(e.data) as DashboardState
-          setState((prev) => ({ ...prev, ...data }))
+          setState((prev) => {
+            if (!prev) return data
+            return { ...prev, ...data }
+          })
           onUpdate?.(data)
         } catch (err) {
           console.error('Failed to parse update:', err)
+          setError(err as Error)
         }
       })
 
-      eventSource.onerror = () => {
+      eventSource.onerror = (event) => {
         setConnected(false)
         eventSource.close()
 
@@ -66,7 +74,7 @@ export function useSSE(options: UseSSEOptions = {}) {
             connect()
           }, reconnectInterval)
         } else {
-          setError(new Error('Max reconnection attempts reached'))
+          setError(new Error('Max reconnection attempts reached. Please refresh the page.'))
         }
       }
     } catch (err) {
@@ -76,15 +84,24 @@ export function useSSE(options: UseSSEOptions = {}) {
   }, [onUpdate, reconnectInterval, maxReconnectAttempts])
 
   useEffect(() => {
+    // Only run on client side
+    if (typeof window === 'undefined') return
+
     // Initial fetch
     fetch('/api/state')
-      .then((r) => r.json())
+      .then((r) => {
+        if (!r.ok) {
+          throw new Error(`HTTP ${r.status}: ${r.statusText}`)
+        }
+        return r.json()
+      })
       .then((data) => {
         setState(data as DashboardState)
         onUpdate?.(data as DashboardState)
       })
       .catch((err) => {
         console.error('Failed to fetch initial state:', err)
+        setError(err as Error)
       })
 
     connect()
@@ -98,7 +115,7 @@ export function useSSE(options: UseSSEOptions = {}) {
         clearTimeout(reconnectTimerRef.current)
       }
     }
-  }, [connect])
+  }, [connect, onUpdate])
 
   return { connected, error, state, reconnect: connect }
 }

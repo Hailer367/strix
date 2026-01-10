@@ -1,7 +1,8 @@
 import type { DashboardState, HistoricalData } from '@/types'
 
 // API base URL - defaults to current origin for same-origin API calls
-const API_BASE = typeof window !== 'undefined' ? window.location.origin : ''
+// In static export mode, we always use relative URLs
+const API_BASE = typeof window !== 'undefined' ? '' : ''
 
 /**
  * Fetch dashboard state from the API
@@ -22,15 +23,16 @@ export async function fetchDashboardState(): Promise<DashboardState | null> {
 /**
  * Fetch historical data for charts
  * @param metric - The metric type to fetch (tokens, cost, rate, etc.)
- * @param duration - Duration in seconds to fetch history for
+ * @param window - Window in seconds to fetch history for (default: 3600)
  */
 export async function fetchHistory(
   metric: string,
-  duration: number = 3600
+  window: number = 3600
 ): Promise<HistoricalData[]> {
   try {
+    // Use 'window' parameter to match server API
     const response = await fetch(
-      `${API_BASE}/api/history?metric=${encodeURIComponent(metric)}&duration=${duration}`
+      `${API_BASE}/api/history?metric=${encodeURIComponent(metric)}&window=${window}`
     )
     if (!response.ok) {
       throw new Error(`Failed to fetch history: ${response.statusText}`)
@@ -79,20 +81,31 @@ export function downloadBlob(blob: Blob, filename: string): void {
  * Subscribe to real-time updates via Server-Sent Events
  * @param onUpdate - Callback function for state updates
  * @returns Cleanup function to close the connection
+ * @deprecated Use useSSE hook instead, which uses the correct /api/stream endpoint
  */
 export function subscribeToUpdates(
   onUpdate: (state: Partial<DashboardState>) => void
 ): () => void {
-  const eventSource = new EventSource(`${API_BASE}/api/events`)
+  // Use the correct endpoint that matches the server
+  const eventSource = new EventSource(`${API_BASE}/api/stream`)
 
-  eventSource.onmessage = (event) => {
+  eventSource.addEventListener('state', (event) => {
     try {
       const data = JSON.parse(event.data)
       onUpdate(data)
     } catch (error) {
-      console.error('Error parsing SSE data:', error)
+      console.error('Error parsing SSE state:', error)
     }
-  }
+  })
+
+  eventSource.addEventListener('update', (event) => {
+    try {
+      const data = JSON.parse(event.data)
+      onUpdate(data)
+    } catch (error) {
+      console.error('Error parsing SSE update:', error)
+    }
+  })
 
   eventSource.onerror = (error) => {
     console.error('SSE connection error:', error)
