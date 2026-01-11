@@ -356,7 +356,7 @@ jobs:
               
               # Try to connect via gRPC health check
               HEALTH_CHECK_RESULT=0
-              python3 << PYEOF || HEALTH_CHECK_RESULT=$?
+              python3 -c "
 import grpc
 import sys
 import os
@@ -366,10 +366,10 @@ try:
   
   tunnel_host = os.environ.get('TUNNEL_HOST', '')
   if not tunnel_host:
-    print("TUNNEL_HOST not set")
+    print('TUNNEL_HOST not set')
     sys.exit(1)
   
-  server_url = f"{tunnel_host}:443"
+  server_url = f'{tunnel_host}:443'
   credentials = grpc.ssl_channel_credentials()
   channel = grpc.secure_channel(server_url, credentials)
   stub = tool_service_pb2_grpc.ToolServiceStub(channel)
@@ -378,20 +378,20 @@ try:
   response = stub.HealthCheck(request, timeout=10)
   
   if response.healthy:
-    print(f"✓ Server healthy: {response.tool_count} tools, {response.registered_agents} agents")
+    print(f'✓ Server healthy: {response.tool_count} tools, {response.registered_agents} agents')
     sys.exit(0)
   else:
-    print(f"✗ Server unhealthy")
+    print('✗ Server unhealthy')
     sys.exit(1)
 except Exception as e:
-  print(f"Health check failed: {e}")
+  print(f'Health check failed: {e}')
   sys.exit(1)
 finally:
   try:
     channel.close()
   except:
     pass
-PYEOF
+" || HEALTH_CHECK_RESULT=$?
               
               if [ $HEALTH_CHECK_RESULT -ne 0 ]; then
                 FAILED_CHECKS=$((FAILED_CHECKS + 1))
