@@ -56,12 +56,17 @@ jobs:
           pip install -q poetry
           poetry config virtualenvs.create false
           
-          # Try poetry install, but don't fail if it has issues
-          if ! poetry install --no-interaction 2>&1; then
+          # Install Strix with sandbox extras for all tool dependencies
+          if ! poetry install --extras sandbox --no-interaction 2>&1; then
             echo "::warning::Poetry install had issues, installing dependencies manually..."
-            # Install core dependencies manually
-            pip install jinja2 httpx tenacity requests pydantic rich docker textual xmltodict fastapi uvicorn
+            # Install core and sandbox dependencies manually
+            pip install jinja2 httpx tenacity requests pydantic rich docker textual xmltodict fastapi uvicorn \
+                        ipython openhands-aci playwright gql pyte libtmux numpydoc
           fi
+          
+          # Install Playwright browsers and system dependencies
+          echo "Installing Playwright browsers..."
+          playwright install --with-deps chromium
           
           # Install PyNaCl for secret encryption
           pip install pynacl
