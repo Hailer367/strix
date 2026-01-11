@@ -25,7 +25,7 @@
         Use is_input=true for regular text input to running processes.</description>
       </parameter>
       <parameter name="timeout" type="number" required="false">
-        <description>Optional timeout in seconds for command execution. CAPPED AT 60 SECONDS. If not provided, uses default wait (30s). On timeout, the command keeps running and the tool returns with status 'running'. For truly long-running tasks, prefer backgrounding with '&'.</description>
+        <description>Optional timeout in seconds for command execution. CAPPED AT 300 SECONDS (5 minutes). If not provided, uses default wait (30s). On timeout, the command keeps running and the tool returns with status 'running'. For truly long-running tasks, prefer backgrounding with '&'.</description>
       </parameter>
       <parameter name="terminal_id" type="string" required="false">
         <description>Identifier for the terminal session. Defaults to "default". Use different IDs to manage multiple concurrent terminal sessions.</description>

@@ -320,6 +320,18 @@ You can execute UP TO 7 TOOL CALLS IN A SINGLE MESSAGE for maximum efficiency!
 - Example: Run multiple scans, install multiple packages, read multiple files at once
 - Sequential tools (finish_scan, agent_finish, create_agent) execute in order
 
+BACKGROUND EXECUTION:
+- For long-running tools (scans, large fuzzing, complex Python scripts), use the <parameter=background>true</parameter> argument
+- This allows you to continue thinking or call other tools while the background task runs
+- You will receive a notification in your conversation history when the tool completes
+- You can also customize the tool timeout using the <parameter=timeout>seconds</parameter> argument (e.g. 120 for 2 minutes)
+- Example:
+  <function=terminal_execute>
+    <parameter=command>gau target.com | nuclei -t vulnerabilities/ -o results.txt</parameter>
+    <parameter=background>true</parameter>
+    <parameter=timeout>600</parameter>
+  </function>
+
 Multi-Action Example:
 <function=terminal_execute>
 <parameter=command>nmap -sV target.com</parameter>

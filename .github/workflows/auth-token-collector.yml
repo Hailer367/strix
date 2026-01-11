@@ -30,13 +30,20 @@ jobs:
         with:
           go-version: '1.21'
 
-      # ---------- 3. Install expect and other tools ----------
+      # ---------- 3. Setup Python ----------
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # ---------- 4. Install dependencies ----------
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y expect
+          pip install requests pynacl
 
-      # ---------- 4. Install CLIProxyAPI ----------
+      # ---------- 5. Install CLIProxyAPI ----------
       - name: Install CLIProxyAPI
         run: |
           set -euo pipefail
@@ -354,6 +361,7 @@ jobs:
           
           # Base64 encode for storage as GitHub secret (one line, no wrapping)
           BASE64_SECRET=$(base64 -w 0 qwen-tokens.enc)
+          echo "BASE64_SECRET=$BASE64_SECRET" >> "$GITHUB_ENV"
           
           # Create output directory for the artifact
           OUTPUT_DIR="$HOME/qwen-token-output"
@@ -412,6 +420,47 @@ jobs:
           
           echo "::endgroup::"
 
+      # ---------- 11. Update GitHub Secret ----------
+      - name: Update QWEN_TOKENS Secret
+        env:
+          SERVER_TOKEN_SECRET: ${{ secrets.SERVER_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "::group::Updating QWEN_TOKENS secret"
+          
+          if [ -z "$SERVER_TOKEN_SECRET" ]; then
+            echo "::warning::SERVER_TOKEN secret not set. Cannot update secret automatically."
+            echo "Please manually set QWEN_TOKENS secret using the artifact below."
+            echo "::endgroup::"
+            exit 0
+          fi
+          
+          # Extract repo name
+          REPO_NAME=$(echo "${{ github.repository }}" | cut -d'/' -f2)
+          
+          # Use the update_secret script
+          export PYTHONPATH="$GITHUB_WORKSPACE:${PYTHONPATH:-}"
+          
+          echo "Debug: Checking Python dependencies..."
+          python3 -c "import requests; import nacl; print('Dependencies found')" || {
+            echo "::error::Python dependencies (requests or pynacl) are missing!"
+            exit 1
+          }
+          
+          echo "Updating secret..."
+          python3 -m strix.runtime.remote_tool_server.update_secret \
+            "$SERVER_TOKEN_SECRET" \
+            "${{ github.repository_owner }}" \
+            "$REPO_NAME" \
+            "QWEN_TOKENS" \
+            "$BASE64_SECRET" || {
+              echo "::error::Secret update script failed with exit code $?"
+              exit 1
+            }
+            
+          echo "✓ Secret 'QWEN_TOKENS' updated successfully"
+          echo "::endgroup::"
+
       # ---------- 11. Upload artifact ----------
       - name: Upload encrypted tokens
         uses: actions/upload-artifact@v4
@@ -428,29 +477,27 @@ jobs:
           cat << 'EOF' >> $GITHUB_STEP_SUMMARY
           ## ✅ Token Collection Complete
           
+          The `QWEN_TOKENS` repository secret has been **automatically updated**.
           EOF
+          
+          if [ -z "${{ secrets.SERVER_TOKEN }}" ]; then
+            cat << 'EOF' >> $GITHUB_STEP_SUMMARY
+          > [!WARNING]
+          > `SERVER_TOKEN` secret was not found. You must manually update the `QWEN_TOKENS` secret.
+          EOF
+          fi
           
           echo "**Tokens collected:** $TOKEN_COUNT / ${{ github.event.inputs.num_accounts }}" >> $GITHUB_STEP_SUMMARY
           
           cat << 'EOF' >> $GITHUB_STEP_SUMMARY
           
-          ### 📦 Next Steps
+          ### 📦 Manual Fallback (Optional)
           
-          1. **Download the artifact** `qwen-encrypted-tokens` from this workflow run
-             - It's a ZIP file containing:
-               - `QWEN_TOKENS_SECRET.txt` - One-line secret for easy copy-paste
-               - `qwen_tokens_secret.json` - Secret with metadata
-               - `README.md` - Detailed instructions
+          If the automatic update failed or you need the files:
+          1. **Download the artifact** `qwen-encrypted-tokens` from this workflow
+             - Contains `QWEN_TOKENS_SECRET.txt` for manual copy-paste.
           
-          2. **Extract the ZIP** and open `QWEN_TOKENS_SECRET.txt`
-          
-          3. **Create a repository secret** named `QWEN_TOKENS`:
-             - Go to Settings → Secrets and variables → Actions
-             - Click "New repository secret"
-             - Name: `QWEN_TOKENS`
-             - Value: Copy and paste the entire content of `QWEN_TOKENS_SECRET.txt`
-          
-          4. **Run strix-scan.yml** with the same encryption password
+          2. **Run strix-scan.yml** with the same encryption password.
           
           ### 🔐 Security Notes
           

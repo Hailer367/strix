@@ -1,0 +1,389 @@
+name: Strix Remote Tool Server
+# NOTE: This workflow is designed to run for a long duration (default 120m) 
+# to keep the remote tool server active. It will appear "Running" in GitHub 
+# Actions while the server is alive. This is intentional.
+
+on:
+  workflow_dispatch:
+    inputs:
+      server_timeout:
+        description: 'Server timeout in minutes (default: 120)'
+        required: false
+        default: '120'
+        type: string
+  workflow_call:
+    # Can be called from other workflows
+
+concurrency:
+  group: strix-server
+  cancel-in-progress: false  # Don't cancel - we want one server running
+
+env:
+  SERVER_PORT: '50051'
+  SERVER_TIMEOUT: 120
+
+jobs:
+  start-server:
+    name: Start Remote Tool Server
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Note: Secret updates are done via API with SERVER_TOKEN, not workflow permissions
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python Environment
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Cloudflared
+        run: |
+          set -euo pipefail
+          echo "::group::Installing Cloudflared"
+          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb
+          rm cloudflared.deb
+          echo "Cloudflared installed: $(cloudflared --version)"
+          echo "::endgroup::"
+
+      - name: Install Dependencies
+        run: |
+          set -euo pipefail
+          echo "::group::Installing Python dependencies"
+          pip install -q poetry
+          poetry config virtualenvs.create false
+          
+          # Install Strix with sandbox extras for all tool dependencies
+          if ! poetry install --extras sandbox --no-interaction 2>&1; then
+            echo "::warning::Poetry install had issues, installing dependencies manually..."
+            # Install core and sandbox dependencies manually
+            pip install jinja2 httpx tenacity requests pydantic rich docker textual xmltodict fastapi uvicorn \
+                        ipython openhands-aci playwright gql pyte libtmux numpydoc
+          fi
+          
+          # Install Playwright browsers and system dependencies
+          echo "Installing Playwright browsers..."
+          playwright install --with-deps chromium
+          
+          # Install PyNaCl for secret encryption
+          pip install pynacl
+          echo "::endgroup::"
+
+      - name: Generate Server Token
+        id: token
+        run: |
+          set -euo pipefail
+          # Generate a secure random token for server authentication
+          TOKEN=$(openssl rand -hex 32)
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+          echo "SERVER_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+
+      - name: Start HTTP Server
+        id: server
+        env:
+          STRIX_SERVER_PORT: ${{ env.SERVER_PORT }}
+          STRIX_SERVER_TOKEN: ${{ steps.token.outputs.token }}
+          STRIXDB_TOKEN: ${{ secrets.STRIXDB_TOKEN }}
+          STRIX_TOOL_POOL_SIZE: "10"
+        run: |
+          set -euo pipefail
+          echo "::group::Starting HTTP Tool Server"
+          
+          # Set PYTHONPATH to include workspace
+          export PYTHONPATH="$GITHUB_WORKSPACE:${PYTHONPATH:-}"
+          
+          # Test server import first
+          cd "$GITHUB_WORKSPACE"
+          python -c "from strix.runtime.remote_tool_server.http_server import serve; print('HTTP Server module imported successfully')" || {
+            echo "::error::Failed to import HTTP server module"
+            exit 1
+          }
+          
+          # Start HTTP server in background
+          cd "$GITHUB_WORKSPACE"
+          # Use standard detachment pattern to ensure shell doesn't wait
+          nohup env \
+            PYTHONPATH="$GITHUB_WORKSPACE:${PYTHONPATH:-}" \
+            STRIX_SERVER_PORT="$STRIX_SERVER_PORT" \
+            STRIX_SERVER_TOKEN="$STRIX_SERVER_TOKEN" \
+            STRIXDB_TOKEN="$STRIXDB_TOKEN" \
+            STRIX_TOOL_POOL_SIZE="$STRIX_TOOL_POOL_SIZE" \
+            python -m strix.runtime.remote_tool_server.http_server < /dev/null > /tmp/server.log 2>&1 &
+          SERVER_PID=$!
+          echo "$SERVER_PID" > /tmp/server.pid
+          
+          # Wait for server to start and check logs
+          sleep 8
+          
+          # Check server logs for errors
+          if [ -f /tmp/server.log ]; then
+            echo "Server startup logs:"
+            cat /tmp/server.log || true
+          fi
+          
+          # Check if server is running
+          if ! kill -0 $SERVER_PID 2>/dev/null; then
+            echo "::error::Server failed to start (PID: $SERVER_PID)"
+            if [ -f /tmp/server.log ]; then
+              echo "Full server logs:"
+              cat /tmp/server.log
+            fi
+            exit 1
+          fi
+          
+          # Test server health - use timeouts to prevent hanging
+          sleep 2
+          HEALTH_CHECK=$(curl -s --connect-timeout 5 --max-time 10 "http://localhost:${{ env.SERVER_PORT }}/health" 2>/dev/null || echo '{"error":"connection failed"}')
+          echo "Health check response: $HEALTH_CHECK"
+          
+          if echo "$HEALTH_CHECK" | grep -q '"healthy":true'; then
+            echo "✓ HTTP Server is healthy and responding!"
+          else
+            echo "::warning::Server started but health check failed. Response: $HEALTH_CHECK"
+          fi
+          
+          echo "Server started with PID: $SERVER_PID"
+          echo "server_pid=$SERVER_PID" >> "$GITHUB_OUTPUT"
+          echo "::endgroup::"
+
+      - name: Start Cloudflared Tunnel
+        id: tunnel
+        run: |
+          set -euo pipefail
+          echo "::group::Starting Cloudflared Tunnel"
+          
+          # Start cloudflared tunnel pointing to HTTP server
+          # HTTP mode works much better with cloudflared than gRPC
+          nohup cloudflared tunnel --url http://localhost:${{ env.SERVER_PORT }} < /dev/null > /tmp/tunnel.log 2>&1 &
+          TUNNEL_PID=$!
+          echo "$TUNNEL_PID" > /tmp/tunnel.pid
+          
+          # Wait for tunnel to establish
+          sleep 10
+          
+          # Extract tunnel URL
+          DASHBOARD_URL=""
+          for i in {1..30}; do
+            DASHBOARD_URL=$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' /tmp/tunnel.log | head -1 || true)
+            if [ -n "$DASHBOARD_URL" ]; then
+              break
+            fi
+            echo "Waiting for tunnel URL... (attempt $i/30)"
+            sleep 2
+          done
+          
+          if [ -z "$DASHBOARD_URL" ]; then
+            echo "::error::Could not establish tunnel"
+            cat /tmp/tunnel.log || true
+            exit 1
+          fi
+          
+          # Extract hostname (remove https://)
+          TUNNEL_HOST=$(echo "$DASHBOARD_URL" | sed 's|https://||')
+          
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║  🌐 REMOTE HTTP TOOL SERVER TUNNEL URL                       ║"
+          echo "║                                                              ║"
+          echo "║  $DASHBOARD_URL"
+          echo "║                                                              ║"
+          echo "║  Protocol: HTTP/HTTPS (Cloudflare-tunneled)                  ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo ""
+          
+          # Test tunnel connectivity - use timeouts
+          echo "Testing tunnel connectivity..."
+          TUNNEL_HEALTH=$(curl -s --connect-timeout 10 --max-time 20 "$DASHBOARD_URL/health" 2>/dev/null || echo '{"error":"connection failed"}')
+          echo "Tunnel health check: $TUNNEL_HEALTH"
+          
+          if echo "$TUNNEL_HEALTH" | grep -q '"healthy":true'; then
+            echo "✓ Tunnel is working correctly!"
+          else
+            echo "::warning::Tunnel established but health check via tunnel failed"
+          fi
+          
+          echo "tunnel_url=$DASHBOARD_URL" >> "$GITHUB_OUTPUT"
+          echo "tunnel_host=$TUNNEL_HOST" >> "$GITHUB_OUTPUT"
+          echo "tunnel_pid=$TUNNEL_PID" >> "$GITHUB_OUTPUT"
+          echo "::endgroup::"
+
+      - name: Update CRED_TUNNEL Secret
+        run: |
+          set -euo pipefail
+          echo "::group::Updating CRED_TUNNEL secret"
+          
+          TUNNEL_URL="${{ steps.tunnel.outputs.tunnel_url }}"
+          SERVER_TOKEN="${{ steps.token.outputs.token }}"
+          SERVER_TOKEN_SECRET="${{ secrets.SERVER_TOKEN }}"
+          
+          if [ -z "$TUNNEL_URL" ]; then
+            echo "::error::Tunnel URL not available"
+            exit 1
+          fi
+          
+          if [ -z "$SERVER_TOKEN_SECRET" ]; then
+            echo "::warning::SERVER_TOKEN secret not set. Cannot update CRED_TUNNEL automatically."
+            echo "Please manually set CRED_TUNNEL secret to: $TUNNEL_URL"
+            echo "And set STRIX_SERVER_TOKEN secret to: $SERVER_TOKEN"
+            echo "::endgroup::"
+            exit 0
+          fi
+          
+          # Format: Full HTTPS URL for HTTP mode
+          CRED_VALUE="$TUNNEL_URL"
+          
+          # Install PyNaCl for secret encryption
+          pip install pynacl
+          
+          # Extract repo name from github.repository (format: owner/repo)
+          REPO_NAME=$(echo "${{ github.repository }}" | cut -d'/' -f2)
+          
+          # Update CRED_TUNNEL secret
+          python -m strix.runtime.remote_tool_server.update_secret \
+            "$SERVER_TOKEN_SECRET" \
+            "${{ github.repository_owner }}" \
+            "$REPO_NAME" \
+            "CRED_TUNNEL" \
+            "$CRED_VALUE"
+          
+          # Update STRIX_SERVER_TOKEN secret
+          python -m strix.runtime.remote_tool_server.update_secret \
+            "$SERVER_TOKEN_SECRET" \
+            "${{ github.repository_owner }}" \
+            "$REPO_NAME" \
+            "STRIX_SERVER_TOKEN" \
+            "$SERVER_TOKEN"
+          
+          echo "✓ Secrets updated successfully"
+          echo "::endgroup::"
+
+      - name: Monitor Server Health
+        run: |
+          set -euo pipefail
+          echo "::group::Monitoring Server Health"
+          
+          SERVER_PID="${{ steps.server.outputs.server_pid }}"
+          TUNNEL_URL="${{ steps.tunnel.outputs.tunnel_url }}"
+          SERVER_TIMEOUT_MINUTES="${{ env.SERVER_TIMEOUT }}"
+          SERVER_TIMEOUT_SECONDS=$((SERVER_TIMEOUT_MINUTES * 60))
+          
+          if [ -z "$SERVER_PID" ]; then
+            echo "::error::Server PID not available"
+            exit 1
+          fi
+          
+          # Health check interval (every 5 minutes)
+          HEALTH_CHECK_INTERVAL=300
+          ELAPSED=0
+          FAILED_CHECKS=0
+          MAX_FAILED_CHECKS=3
+          
+          while [ $ELAPSED -lt $SERVER_TIMEOUT_SECONDS ]; do
+            # Check if server process is still running
+            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+              echo "::error::Server process died (PID: $SERVER_PID)"
+              if [ -f /tmp/server.log ]; then
+                echo "Last 50 lines of server log:"
+                tail -50 /tmp/server.log || true
+              fi
+              exit 1
+            fi
+            
+            # Try to check server health via HTTP if tunnel is available
+            if [ -n "$TUNNEL_URL" ] && [ $((ELAPSED % HEALTH_CHECK_INTERVAL)) -eq 0 ]; then
+              echo "Performing health check (elapsed: ${ELAPSED}s)..."
+              
+              HEALTH_RESPONSE=$(curl -s --max-time 10 "$TUNNEL_URL/health" 2>/dev/null || echo '{"error":"timeout"}')
+              
+              if echo "$HEALTH_RESPONSE" | grep -q '"healthy":true'; then
+                echo "✓ Server healthy"
+                FAILED_CHECKS=0  # Reset on success
+                
+                # Extract tool count from response
+                TOOL_COUNT=$(echo "$HEALTH_RESPONSE" | grep -oP '"tool_count":\s*\K\d+' || echo "?")
+                AGENTS=$(echo "$HEALTH_RESPONSE" | grep -oP '"registered_agents":\s*\K\d+' || echo "?")
+                echo "  Tools: $TOOL_COUNT, Agents: $AGENTS"
+              else
+                FAILED_CHECKS=$((FAILED_CHECKS + 1))
+                echo "::warning::Health check failed (${FAILED_CHECKS}/${MAX_FAILED_CHECKS}): $HEALTH_RESPONSE"
+                
+                if [ $FAILED_CHECKS -ge $MAX_FAILED_CHECKS ]; then
+                  echo "::error::Server health checks failed ${MAX_FAILED_CHECKS} times. Server may be unhealthy."
+                  if [ -f /tmp/server.log ]; then
+                    echo "Recent server logs:"
+                    tail -100 /tmp/server.log || true
+                  fi
+                  # Don't exit - let it continue but log the issue
+                fi
+              fi
+            fi
+            
+            # Sleep for 30 seconds before next check
+            sleep 30
+            ELAPSED=$((ELAPSED + 30))
+            
+            # Log progress every 5 minutes
+            if [ $((ELAPSED % 300)) -eq 0 ]; then
+              MINUTES=$((ELAPSED / 60))
+              echo "Server running for ${MINUTES} minutes (${ELAPSED}/${SERVER_TIMEOUT_SECONDS}s)"
+            fi
+          done
+          
+          echo "Server timeout reached (${SERVER_TIMEOUT_MINUTES} minutes)"
+          echo "::endgroup::"
+
+      - name: Wait for Server Timeout
+        timeout-minutes: ${{ fromJson(github.event.inputs.server_timeout || '120') }}
+        run: |
+          set -euo pipefail
+          echo "::group::Server Running (waiting for timeout or manual stop)"
+          
+          SERVER_PID=$(cat /tmp/server.pid)
+          TUNNEL_PID=$(cat /tmp/tunnel.pid)
+          
+          echo "Server PID: $SERVER_PID"
+          echo "Tunnel PID: $TUNNEL_PID"
+          echo "Server will run until timeout or manual cancellation"
+          
+          # Monitor server health
+          while kill -0 $SERVER_PID 2>/dev/null; do
+            sleep 30
+            echo "Server still running... $(date)"
+          done
+          
+          echo "Server stopped"
+          echo "::endgroup::"
+
+      - name: Stop Server and Tunnel
+        if: always()
+        run: |
+          set -euo pipefail
+          echo "::group::Stopping Server and Tunnel"
+          
+          if [ -f /tmp/tunnel.pid ]; then
+            TUNNEL_PID=$(cat /tmp/tunnel.pid)
+            kill $TUNNEL_PID 2>/dev/null || true
+            echo "Tunnel stopped"
+          fi
+          
+          if [ -f /tmp/server.pid ]; then
+            SERVER_PID=$(cat /tmp/server.pid)
+            kill $SERVER_PID 2>/dev/null || true
+            echo "Server stopped"
+          fi
+          
+          # Show logs
+          if [ -f /tmp/server.log ]; then
+            echo "Server logs:"
+            tail -50 /tmp/server.log || true
+          fi
+          
+          if [ -f /tmp/tunnel.log ]; then
+            echo "Tunnel logs:"
+            tail -50 /tmp/tunnel.log || true
+          fi
+          
+          echo "::endgroup::"

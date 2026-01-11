@@ -1,0 +1,97 @@
+syntax = "proto3";
+
+package strix.tool_service;
+
+// Tool execution service definition
+service ToolService {
+  // Execute a single tool
+  rpc ExecuteTool(ToolRequest) returns (ToolResponse);
+  
+  // Execute multiple tools in batch (concurrent execution)
+  rpc ExecuteBatch(BatchToolRequest) returns (BatchToolResponse);
+  
+  // Stream tool output for long-running operations
+  rpc StreamToolOutput(StreamRequest) returns (stream StreamResponse);
+  
+  // Health check endpoint
+  rpc HealthCheck(HealthRequest) returns (HealthResponse);
+  
+  // Register an agent with the server
+  rpc RegisterAgent(RegisterAgentRequest) returns (RegisterAgentResponse);
+}
+
+// Request to execute a single tool
+message ToolRequest {
+  string agent_id = 1;
+  string tool_name = 2;
+  map<string, string> kwargs = 3;  // JSON-encoded values
+  string auth_token = 4;
+}
+
+// Response from tool execution
+message ToolResponse {
+  bool success = 1;
+  string result = 2;  // JSON-encoded result
+  string error = 3;
+  int32 exit_code = 4;
+}
+
+// Request for batch tool execution
+message BatchToolRequest {
+  string agent_id = 1;
+  repeated ToolSpec tools = 2;
+  string auth_token = 3;
+}
+
+// Individual tool specification in batch
+message ToolSpec {
+  string tool_name = 1;
+  map<string, string> kwargs = 2;  // JSON-encoded values
+}
+
+// Response from batch execution
+message BatchToolResponse {
+  repeated ToolResponse results = 1;
+}
+
+// Request for streaming tool output
+message StreamRequest {
+  string agent_id = 1;
+  string tool_name = 2;
+  map<string, string> kwargs = 3;
+  string auth_token = 4;
+}
+
+// Streamed response chunk
+message StreamResponse {
+  string chunk = 1;
+  bool done = 2;
+  string error = 3;
+}
+
+// Health check request
+message HealthRequest {
+  // Empty - no parameters needed
+}
+
+// Health check response
+message HealthResponse {
+  bool healthy = 1;
+  string version = 2;
+  int32 registered_agents = 3;
+  int32 tool_count = 4;
+  string network_status = 5;
+}
+
+// Register agent request
+message RegisterAgentRequest {
+  string agent_id = 1;
+  string auth_token = 2;
+}
+
+// Register agent response
+message RegisterAgentResponse {
+  bool success = 1;
+  string agent_id = 2;
+  string message = 3;
+}

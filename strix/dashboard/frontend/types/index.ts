@@ -11,6 +11,22 @@ export interface DashboardState {
   current_step: CurrentStep
   live_feed: LiveFeedEntry[]
   last_updated: string | null
+  server_metrics?: ServerMetrics
+}
+
+export interface ServerMetrics {
+  uptime_seconds: number
+  request_rate_per_minute: number
+  error_rate: number
+  total_requests: number
+  tool_count: number
+  connection_pool: {
+    pool_size: number
+    active_connections: number
+  }
+  circuit_breaker: {
+    state: 'closed' | 'open' | 'half_open'
+  }
 }
 
 export interface Agent {

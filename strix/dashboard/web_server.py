@@ -81,6 +81,20 @@ _web_dashboard_state: dict[str, Any] = {
     },
     "live_feed": [],  # CLI-like activity feed
     "last_updated": None,
+    "server_metrics": {  # Remote tool server metrics
+        "uptime_seconds": 0,
+        "request_rate_per_minute": 0,
+        "error_rate": 0.0,
+        "total_requests": 0,
+        "tool_count": 0,
+        "connection_pool": {
+            "pool_size": 0,
+            "active_connections": 0,
+        },
+        "circuit_breaker": {
+            "state": "closed",
+        },
+    },
 }
 
 _sse_clients: list[Any] = []
@@ -276,6 +290,8 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
             self._serve_sse_stream()
         elif path == "/api/live-feed":
             self._serve_live_feed()
+        elif path == "/api/server-metrics":
+            self._serve_server_metrics()
         elif path.startswith("/api/history"):
             self._serve_history(query_params)
         elif path.startswith("/api/export"):
@@ -300,6 +316,19 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
         """Serve health check endpoint."""
         self._send_response_headers("application/json")
         self.wfile.write(json.dumps({"status": "healthy", "timestamp": datetime.now(UTC).isoformat()}).encode())
+
+    def _serve_server_metrics(self) -> None:
+        """Serve remote tool server metrics."""
+        try:
+            # Try to get metrics from remote server if available
+            server_metrics = get_dashboard_state().get("server_metrics", {})
+            
+            self._send_response_headers("application/json")
+            self.wfile.write(json.dumps(server_metrics, default=str).encode())
+        except Exception as e:
+            logger.error(f"Error serving server metrics: {e}")
+            self._send_response_headers("application/json", 500)
+            self.wfile.write(json.dumps({"error": str(e)}).encode())
     
     def _serve_state_json(self) -> None:
         """Serve the current dashboard state as JSON."""
