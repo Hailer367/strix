@@ -459,6 +459,22 @@ jobs:
               "$GITHUB_WORKSPACE/strix/runtime/remote_tool_server/proto/" 2>/dev/null || true
           }
           
+          # CRITICAL: Fix imports in generated files
+          # gRPC tools generates absolute imports that don't work with package structure
+          # We need to convert 'import tool_service_pb2' to 'from . import tool_service_pb2'
+          PROTO_DIR="$GITHUB_WORKSPACE/strix/runtime/remote_tool_server/proto"
+          if [ -f "$PROTO_DIR/tool_service_pb2_grpc.py" ]; then
+            sed -i 's/^import tool_service_pb2 as/from . import tool_service_pb2 as/' "$PROTO_DIR/tool_service_pb2_grpc.py"
+            echo "✓ Fixed imports in tool_service_pb2_grpc.py"
+          fi
+          
+          # Also fix in /tmp/strix if needed
+          TMP_PROTO_DIR="/tmp/strix/strix/runtime/remote_tool_server/proto"
+          if [ -f "$TMP_PROTO_DIR/tool_service_pb2_grpc.py" ]; then
+            sed -i 's/^import tool_service_pb2 as/from . import tool_service_pb2 as/' "$TMP_PROTO_DIR/tool_service_pb2_grpc.py"
+            echo "✓ Fixed imports in /tmp/strix proto files"
+          fi
+          
           # Verify proto files exist in GITHUB_WORKSPACE
           if [ -f "$GITHUB_WORKSPACE/strix/runtime/remote_tool_server/proto/tool_service_pb2.py" ]; then
             echo "✓ Proto files verified in GITHUB_WORKSPACE"
