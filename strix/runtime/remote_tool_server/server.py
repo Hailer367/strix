@@ -293,4 +293,11 @@ if __name__ == "__main__":
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
-    serve()
+    try:
+        serve()
+    except KeyboardInterrupt:
+        logger.info("Server stopped by user")
+        sys.exit(0)
+    except Exception as e:
+        logger.exception(f"Fatal error starting server: {e}")
+        sys.exit(1)
