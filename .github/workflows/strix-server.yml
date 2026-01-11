@@ -74,10 +74,10 @@ jobs:
           # Generate proto files
           python -m strix.runtime.remote_tool_server.generate_proto || {
             echo "::warning::Module import failed, trying direct script execution"
-            python strix/strix/runtime/remote_tool_server/generate_proto.py
+            python strix/runtime/remote_tool_server/generate_proto.py
           }
           echo "Generated gRPC code"
-          ls -la strix/strix/runtime/remote_tool_server/proto/ || true
+          ls -la strix/runtime/remote_tool_server/proto/ || true
           echo "::endgroup::"
 
       - name: Generate Server Token
@@ -100,10 +100,11 @@ jobs:
           export STRIX_SERVER_TOKEN="${{ steps.token.outputs.token }}"
           export STRIXDB_TOKEN="${{ secrets.STRIXDB_TOKEN }}"
           export STRIX_TOOL_POOL_SIZE="10"
-          export PYTHONPATH="$GITHUB_WORKSPACE:$PYTHONPATH"
+          # Handle PYTHONPATH gracefully - use empty string if not set
+          export PYTHONPATH="$GITHUB_WORKSPACE:${PYTHONPATH:-}"
           
-          # Verify proto files were generated
-          if [ ! -f "$GITHUB_WORKSPACE/strix/strix/runtime/remote_tool_server/proto/tool_service_pb2.py" ]; then
+          # Verify proto files were generated (correct path: strix/runtime not strix/strix/runtime)
+          if [ ! -f "$GITHUB_WORKSPACE/strix/runtime/remote_tool_server/proto/tool_service_pb2.py" ]; then
             echo "::error::Proto files not generated"
             exit 1
           fi
