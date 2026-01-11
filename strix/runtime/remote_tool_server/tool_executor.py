@@ -60,16 +60,26 @@ class ToolExecutor:
                 return {"error": f"Tool '{tool_name}' not found"}
 
             # Convert arguments to proper types
-            converted_kwargs = convert_arguments(tool_func, kwargs)
+            try:
+                converted_kwargs = convert_arguments(tool_func, kwargs)
+            except Exception as e:
+                return {"error": f"Argument conversion error: {str(e)}"}
 
             # Check if tool needs agent_state
             from strix.tools.registry import needs_agent_state
 
             if needs_agent_state(tool_name):
                 if agent_state is None:
-                    return {
-                        "error": f"Tool '{tool_name}' requires agent_state but none was provided"
-                    }
+                    # Create a minimal agent_state object for tools that need it
+                    # This allows tools to execute even without full agent context
+                    class MinimalAgentState:
+                        def __init__(self) -> None:
+                            self.agent_id = "remote-server-agent"
+                            self.sandbox_id = "remote-server"
+                            self.sandbox_token = ""
+                            self.sandbox_info = {}
+                    
+                    agent_state = MinimalAgentState()
                 result = tool_func(agent_state=agent_state, **converted_kwargs)
             else:
                 result = tool_func(**converted_kwargs)
