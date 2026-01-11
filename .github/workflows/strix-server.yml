@@ -69,15 +69,29 @@ jobs:
           set -euo pipefail
           echo "::group::Generating gRPC code from proto files"
           cd "$GITHUB_WORKSPACE"
-          # Install package in development mode so imports work
-          pip install -e . 2>/dev/null || true
-          # Generate proto files
-          python -m strix.runtime.remote_tool_server.generate_proto || {
-            echo "::warning::Module import failed, trying direct script execution"
-            python strix/runtime/remote_tool_server/generate_proto.py
+          
+          # First, generate proto files before installing the package
+          # Use PYTHONPATH to find the strix module
+          export PYTHONPATH="$GITHUB_WORKSPACE:${PYTHONPATH:-}"
+          
+          # Generate proto files using the script directly
+          python strix/runtime/remote_tool_server/generate_proto.py || {
+            echo "::warning::Direct script failed, trying module execution"
+            python -m strix.runtime.remote_tool_server.generate_proto
           }
+          
           echo "Generated gRPC code"
           ls -la strix/runtime/remote_tool_server/proto/ || true
+          
+          # Now install the package in development mode (proto files now exist)
+          pip install -e . 2>/dev/null || true
+          
+          # Verify proto files are importable
+          python -c "from strix.runtime.remote_tool_server.proto import tool_service_pb2; print('Proto import successful')" || {
+            echo "::error::Proto files generated but not importable"
+            exit 1
+          }
+          
           echo "::endgroup::"
 
       - name: Generate Server Token
