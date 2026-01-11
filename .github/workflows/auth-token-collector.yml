@@ -30,11 +30,18 @@ jobs:
         with:
           go-version: '1.21'
 
-      # ---------- 3. Install expect and other tools ----------
+      # ---------- 3. Setup Python ----------
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # ---------- 4. Install dependencies ----------
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y expect
+          pip install requests pynacl
 
       # ---------- 5. Install CLIProxyAPI ----------
       - name: Install CLIProxyAPI
