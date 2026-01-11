@@ -219,6 +219,57 @@ class ToolServiceServicer:
             response.message = str(e)
             return response
 
+    def StreamToolOutput(self, request: Any, context: Any) -> Any:
+        """Stream tool output for long-running operations."""
+        if not PROTO_AVAILABLE:
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details("Proto files not generated.")
+            return
+
+        try:
+            verify_token(request.auth_token)
+
+            # Parse kwargs from JSON strings
+            kwargs = {}
+            for key, value in request.kwargs.items():
+                try:
+                    kwargs[key] = json.loads(value)
+                except json.JSONDecodeError:
+                    kwargs[key] = value
+
+            executor = get_tool_executor()
+            
+            # For now, execute the tool and yield results as chunks
+            # This is a simple implementation - can be enhanced for true streaming
+            result = executor.execute_tool(request.tool_name, kwargs)
+            
+            if "error" in result:
+                response = tool_service_pb2.StreamResponse()
+                response.done = True
+                response.error = result["error"]
+                response.chunk = ""
+                yield response
+            else:
+                # Serialize result and send as single chunk
+                try:
+                    result_str = json.dumps(result.get("result", ""))
+                except (TypeError, ValueError):
+                    result_str = str(result.get("result", ""))
+                
+                response = tool_service_pb2.StreamResponse()
+                response.chunk = result_str
+                response.done = True
+                response.error = ""
+                yield response
+
+        except Exception as e:
+            logger.exception(f"Error in stream: {e}")
+            response = tool_service_pb2.StreamResponse()
+            response.done = True
+            response.error = str(e)
+            response.chunk = ""
+            yield response
+
 
 def serve() -> None:
     """Start the gRPC server."""
