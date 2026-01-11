@@ -1,0 +1,259 @@
+name: Strix Remote Tool Server
+
+on:
+  workflow_dispatch:
+    inputs:
+      server_timeout:
+        description: 'Server timeout in minutes (default: 120)'
+        required: false
+        default: '120'
+        type: string
+  workflow_call:
+    # Can be called from other workflows
+
+concurrency:
+  group: strix-server
+  cancel-in-progress: false  # Don't cancel - we want one server running
+
+env:
+  SERVER_PORT: '50051'
+  SERVER_TIMEOUT: '120'
+
+jobs:
+  start-server:
+    name: Start Remote Tool Server
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      secrets: write  # Needed to update CRED_TUNNEL secret
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python Environment
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Cloudflared
+        run: |
+          set -euo pipefail
+          echo "::group::Installing Cloudflared"
+          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb
+          rm cloudflared.deb
+          echo "Cloudflared installed: $(cloudflared --version)"
+          echo "::endgroup::"
+
+      - name: Install Dependencies
+        run: |
+          set -euo pipefail
+          echo "::group::Installing Python dependencies"
+          pip install -q poetry
+          poetry config virtualenvs.create false
+          poetry install --no-interaction
+          # Install gRPC dependencies and PyNaCl for secret encryption
+          pip install grpcio grpcio-tools pynacl
+          echo "::endgroup::"
+
+      - name: Generate gRPC Code
+        run: |
+          set -euo pipefail
+          echo "::group::Generating gRPC code from proto files"
+          python -m strix.runtime.remote_tool_server.generate_proto
+          echo "Generated gRPC code"
+          ls -la strix/strix/runtime/remote_tool_server/proto/
+          echo "::endgroup::"
+
+      - name: Generate Server Token
+        id: token
+        run: |
+          set -euo pipefail
+          # Generate a secure random token for server authentication
+          TOKEN=$(openssl rand -hex 32)
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+          echo "SERVER_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+
+      - name: Start gRPC Server
+        id: server
+        run: |
+          set -euo pipefail
+          echo "::group::Starting gRPC Tool Server"
+          
+          # Export environment variables
+          export STRIX_SERVER_PORT="${{ env.SERVER_PORT }}"
+          export STRIX_SERVER_TOKEN="${{ steps.token.outputs.token }}"
+          export STRIXDB_TOKEN="${{ secrets.STRIXDB_TOKEN }}"
+          export STRIX_TOOL_POOL_SIZE="10"
+          
+          # Start server in background
+          cd "$GITHUB_WORKSPACE"
+          nohup python -m strix.runtime.remote_tool_server.server > /tmp/server.log 2>&1 &
+          SERVER_PID=$!
+          echo "$SERVER_PID" > /tmp/server.pid
+          
+          # Wait for server to start
+          sleep 5
+          
+          # Check if server is running
+          if ! kill -0 $SERVER_PID 2>/dev/null; then
+            echo "::error::Server failed to start"
+            cat /tmp/server.log || true
+            exit 1
+          fi
+          
+          echo "Server started with PID: $SERVER_PID"
+          echo "server_pid=$SERVER_PID" >> "$GITHUB_OUTPUT"
+          echo "::endgroup::"
+
+      - name: Start Cloudflared Tunnel
+        id: tunnel
+        run: |
+          set -euo pipefail
+          echo "::group::Starting Cloudflared Tunnel"
+          
+          # Start cloudflared tunnel pointing to gRPC server
+          # Note: gRPC requires TLS, so we use cloudflared's HTTPS tunnel
+          nohup cloudflared tunnel --url http://localhost:${{ env.SERVER_PORT }} > /tmp/tunnel.log 2>&1 &
+          TUNNEL_PID=$!
+          echo "$TUNNEL_PID" > /tmp/tunnel.pid
+          
+          # Wait for tunnel to establish
+          sleep 10
+          
+          # Extract tunnel URL
+          DASHBOARD_URL=""
+          for i in {1..30}; do
+            DASHBOARD_URL=$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' /tmp/tunnel.log | head -1 || true)
+            if [ -n "$DASHBOARD_URL" ]; then
+              break
+            fi
+            echo "Waiting for tunnel URL... (attempt $i/30)"
+            sleep 2
+          done
+          
+          if [ -z "$DASHBOARD_URL" ]; then
+            echo "::error::Could not establish tunnel"
+            cat /tmp/tunnel.log || true
+            exit 1
+          fi
+          
+          # Extract hostname for gRPC (remove https://)
+          TUNNEL_HOST=$(echo "$DASHBOARD_URL" | sed 's|https://||')
+          
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║  🌐 REMOTE TOOL SERVER TUNNEL URL                           ║"
+          echo "║                                                              ║"
+          echo "║  $DASHBOARD_URL"
+          echo "║                                                              ║"
+          echo "║  gRPC Host: $TUNNEL_HOST"
+          echo "║  Port: 443 (HTTPS/TLS)                                       ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo ""
+          
+          echo "tunnel_url=$DASHBOARD_URL" >> "$GITHUB_OUTPUT"
+          echo "tunnel_host=$TUNNEL_HOST" >> "$GITHUB_OUTPUT"
+          echo "tunnel_pid=$TUNNEL_PID" >> "$GITHUB_OUTPUT"
+          echo "::endgroup::"
+
+      - name: Update CRED_TUNNEL Secret
+        run: |
+          set -euo pipefail
+          echo "::group::Updating CRED_TUNNEL secret"
+          
+          TUNNEL_HOST="${{ steps.tunnel.outputs.tunnel_host }}"
+          SERVER_TOKEN="${{ steps.token.outputs.token }}"
+          SERVER_TOKEN_SECRET="${{ secrets.SERVER_TOKEN }}"
+          
+          if [ -z "$TUNNEL_HOST" ]; then
+            echo "::error::Tunnel host not available"
+            exit 1
+          fi
+          
+          if [ -z "$SERVER_TOKEN_SECRET" ]; then
+            echo "::warning::SERVER_TOKEN secret not set. Cannot update CRED_TUNNEL automatically."
+            echo "Please manually set CRED_TUNNEL secret to: $TUNNEL_HOST:443"
+            echo "And set STRIX_SERVER_TOKEN secret to: $SERVER_TOKEN"
+            echo "::endgroup::"
+            exit 0
+          fi
+          
+          # Format: host:port for gRPC
+          CRED_VALUE="$TUNNEL_HOST:443"
+          
+          # Install PyNaCl for secret encryption
+          pip install pynacl
+          
+          # Update CRED_TUNNEL secret
+          python -m strix.runtime.remote_tool_server.update_secret \
+            "$SERVER_TOKEN_SECRET" \
+            "${{ github.repository_owner }}" \
+            "${{ github.event.repository.name }}" \
+            "CRED_TUNNEL" \
+            "$CRED_VALUE"
+          
+          # Update STRIX_SERVER_TOKEN secret
+          python -m strix.runtime.remote_tool_server.update_secret \
+            "$SERVER_TOKEN_SECRET" \
+            "${{ github.repository_owner }}" \
+            "${{ github.event.repository.name }}" \
+            "STRIX_SERVER_TOKEN" \
+            "$SERVER_TOKEN"
+          
+          echo "✓ Secrets updated successfully"
+          echo "::endgroup::"
+
+      - name: Wait for Server Timeout
+        timeout-minutes: ${{ github.event.inputs.server_timeout || env.SERVER_TIMEOUT }}
+        run: |
+          set -euo pipefail
+          echo "::group::Server Running (waiting for timeout or manual stop)"
+          
+          SERVER_PID=$(cat /tmp/server.pid)
+          TUNNEL_PID=$(cat /tmp/tunnel.pid)
+          
+          echo "Server PID: $SERVER_PID"
+          echo "Tunnel PID: $TUNNEL_PID"
+          echo "Server will run until timeout or manual cancellation"
+          
+          # Monitor server health
+          while kill -0 $SERVER_PID 2>/dev/null; do
+            sleep 30
+            echo "Server still running... $(date)"
+          done
+          
+          echo "Server stopped"
+          echo "::endgroup::"
+
+      - name: Stop Server and Tunnel
+        if: always()
+        run: |
+          set -euo pipefail
+          echo "::group::Stopping Server and Tunnel"
+          
+          if [ -f /tmp/tunnel.pid ]; then
+            TUNNEL_PID=$(cat /tmp/tunnel.pid)
+            kill $TUNNEL_PID 2>/dev/null || true
+            echo "Tunnel stopped"
+          fi
+          
+          if [ -f /tmp/server.pid ]; then
+            SERVER_PID=$(cat /tmp/server.pid)
+            kill $SERVER_PID 2>/dev/null || true
+            echo "Server stopped"
+          fi
+          
+          # Show logs
+          if [ -f /tmp/server.log ]; then
+            echo "Server logs:"
+            tail -50 /tmp/server.log || true
+          fi
+          
+          if [ -f /tmp/tunnel.log ]; then
+            echo "Tunnel logs:"
+            tail -50 /tmp/tunnel.log || true
+          fi
+          
+          echo "::endgroup::"

@@ -427,10 +427,24 @@ jobs:
           
           # Ensure critical dependencies are installed (in case of partial installation)
           echo "Verifying critical dependencies..."
-          pip install jinja2 httpx tenacity requests pydantic rich docker textual xmltodict
+          pip install jinja2 httpx tenacity requests pydantic rich docker textual xmltodict grpcio grpcio-tools
           
           # Set environment variable for direct API mode
           echo "STRIX_DIRECT_API_MODE=true" >> "$GITHUB_ENV"
+          
+          # Set up remote runtime if CRED_TUNNEL is available
+          if [ -n "${{ secrets.CRED_TUNNEL }}" ]; then
+            echo "Remote tool server detected - using remote runtime"
+            echo "STRIX_RUNTIME_BACKEND=remote" >> "$GITHUB_ENV"
+            echo "CRED_TUNNEL=${{ secrets.CRED_TUNNEL }}" >> "$GITHUB_ENV"
+            echo "STRIX_SERVER_TOKEN=${{ secrets.STRIX_SERVER_TOKEN }}" >> "$GITHUB_ENV"
+          else
+            echo "No remote server - using Docker runtime"
+          fi
+          
+          # Generate gRPC proto files if they don't exist
+          echo "Generating gRPC proto files..."
+          python -m strix.runtime.remote_tool_server.generate_proto 2>/dev/null || echo "Proto generation skipped (may already exist)"
           
           # Verify installation with proper error detection
           echo "Verifying Strix installation..."
@@ -803,6 +817,10 @@ jobs:
         continue-on-error: true
         env:
           STRIXDB_TOKEN: ${{ secrets.STRIXDB_TOKEN }}
+          # Remote server configuration
+          CRED_TUNNEL: ${{ secrets.CRED_TUNNEL }}
+          STRIX_SERVER_TOKEN: ${{ secrets.STRIX_SERVER_TOKEN }}
+          STRIX_RUNTIME_BACKEND: ${{ env.STRIX_RUNTIME_BACKEND || 'docker' }}
           # Direct CLIProxyAPI mode - model name without provider prefix
           STRIX_LLM: ${{ github.event.inputs.model || 'qwen3-coder-plus' }}
           LLM_API_BASE: ${{ steps.cliproxy.outputs.endpoint }}
