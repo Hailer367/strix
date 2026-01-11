@@ -36,7 +36,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y expect
 
-      # ---------- 4. Install CLIProxyAPI ----------
+      # ---------- 5. Install CLIProxyAPI ----------
       - name: Install CLIProxyAPI
         run: |
           set -euo pipefail
@@ -433,12 +433,23 @@ jobs:
           
           # Use the update_secret script
           export PYTHONPATH="$GITHUB_WORKSPACE:${PYTHONPATH:-}"
+          
+          echo "Debug: Checking Python dependencies..."
+          python3 -c "import requests; import nacl; print('Dependencies found')" || {
+            echo "::error::Python dependencies (requests or pynacl) are missing!"
+            exit 1
+          }
+          
+          echo "Updating secret..."
           python3 -m strix.runtime.remote_tool_server.update_secret \
             "$SERVER_TOKEN_SECRET" \
             "${{ github.repository_owner }}" \
             "$REPO_NAME" \
             "QWEN_TOKENS" \
-            "$BASE64_SECRET"
+            "$BASE64_SECRET" || {
+              echo "::error::Secret update script failed with exit code $?"
+              exit 1
+            }
             
           echo "✓ Secret 'QWEN_TOKENS' updated successfully"
           echo "::endgroup::"
