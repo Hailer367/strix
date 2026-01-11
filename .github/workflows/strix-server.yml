@@ -1,4 +1,7 @@
 name: Strix Remote Tool Server
+# NOTE: This workflow is designed to run for a long duration (default 120m) 
+# to keep the remote tool server active. It will appear "Running" in GitHub 
+# Actions while the server is alive. This is intentional.
 
 on:
   workflow_dispatch:
@@ -96,13 +99,14 @@ jobs:
           
           # Start HTTP server in background
           cd "$GITHUB_WORKSPACE"
+          # Use standard detachment pattern to ensure shell doesn't wait
           nohup env \
             PYTHONPATH="$GITHUB_WORKSPACE:${PYTHONPATH:-}" \
             STRIX_SERVER_PORT="$STRIX_SERVER_PORT" \
             STRIX_SERVER_TOKEN="$STRIX_SERVER_TOKEN" \
             STRIXDB_TOKEN="$STRIXDB_TOKEN" \
             STRIX_TOOL_POOL_SIZE="$STRIX_TOOL_POOL_SIZE" \
-            python -m strix.runtime.remote_tool_server.http_server > /tmp/server.log 2>&1 &
+            python -m strix.runtime.remote_tool_server.http_server < /dev/null > /tmp/server.log 2>&1 &
           SERVER_PID=$!
           echo "$SERVER_PID" > /tmp/server.pid
           
@@ -125,9 +129,9 @@ jobs:
             exit 1
           fi
           
-          # Test server health
+          # Test server health - use timeouts to prevent hanging
           sleep 2
-          HEALTH_CHECK=$(curl -s "http://localhost:${{ env.SERVER_PORT }}/health" 2>/dev/null || echo '{"error":"connection failed"}')
+          HEALTH_CHECK=$(curl -s --connect-timeout 5 --max-time 10 "http://localhost:${{ env.SERVER_PORT }}/health" 2>/dev/null || echo '{"error":"connection failed"}')
           echo "Health check response: $HEALTH_CHECK"
           
           if echo "$HEALTH_CHECK" | grep -q '"healthy":true'; then
@@ -148,7 +152,7 @@ jobs:
           
           # Start cloudflared tunnel pointing to HTTP server
           # HTTP mode works much better with cloudflared than gRPC
-          nohup cloudflared tunnel --url http://localhost:${{ env.SERVER_PORT }} > /tmp/tunnel.log 2>&1 &
+          nohup cloudflared tunnel --url http://localhost:${{ env.SERVER_PORT }} < /dev/null > /tmp/tunnel.log 2>&1 &
           TUNNEL_PID=$!
           echo "$TUNNEL_PID" > /tmp/tunnel.pid
           
@@ -185,9 +189,9 @@ jobs:
           echo "╚══════════════════════════════════════════════════════════════╝"
           echo ""
           
-          # Test tunnel connectivity
+          # Test tunnel connectivity - use timeouts
           echo "Testing tunnel connectivity..."
-          TUNNEL_HEALTH=$(curl -s "$DASHBOARD_URL/health" 2>/dev/null || echo '{"error":"connection failed"}')
+          TUNNEL_HEALTH=$(curl -s --connect-timeout 10 --max-time 20 "$DASHBOARD_URL/health" 2>/dev/null || echo '{"error":"connection failed"}')
           echo "Tunnel health check: $TUNNEL_HEALTH"
           
           if echo "$TUNNEL_HEALTH" | grep -q '"healthy":true'; then
