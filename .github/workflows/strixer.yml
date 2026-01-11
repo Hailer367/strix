@@ -442,9 +442,32 @@ jobs:
             echo "No remote server - using Docker runtime"
           fi
           
-          # Generate gRPC proto files if they don't exist
-          echo "Generating gRPC proto files..."
+          # Generate gRPC proto files in /tmp/strix
+          echo "Generating gRPC proto files in /tmp/strix..."
           python -m strix.runtime.remote_tool_server.generate_proto 2>/dev/null || echo "Proto generation skipped (may already exist)"
+          
+          # CRITICAL: Also generate proto files in GITHUB_WORKSPACE for runtime imports
+          # The scan runs from GITHUB_WORKSPACE, not /tmp/strix, so proto files must exist there
+          echo "Generating gRPC proto files in GITHUB_WORKSPACE..."
+          cd "$GITHUB_WORKSPACE"
+          python -m strix.runtime.remote_tool_server.generate_proto || {
+            echo "::warning::Proto generation in GITHUB_WORKSPACE failed, copying from /tmp/strix..."
+            # Fallback: copy generated files from /tmp/strix to GITHUB_WORKSPACE
+            cp -f /tmp/strix/strix/runtime/remote_tool_server/proto/tool_service_pb2.py \
+              "$GITHUB_WORKSPACE/strix/runtime/remote_tool_server/proto/" 2>/dev/null || true
+            cp -f /tmp/strix/strix/runtime/remote_tool_server/proto/tool_service_pb2_grpc.py \
+              "$GITHUB_WORKSPACE/strix/runtime/remote_tool_server/proto/" 2>/dev/null || true
+          }
+          
+          # Verify proto files exist in GITHUB_WORKSPACE
+          if [ -f "$GITHUB_WORKSPACE/strix/runtime/remote_tool_server/proto/tool_service_pb2.py" ]; then
+            echo "✓ Proto files verified in GITHUB_WORKSPACE"
+          else
+            echo "::warning::Proto files not found in GITHUB_WORKSPACE - remote runtime may not work"
+          fi
+          
+          # Return to /tmp/strix for verification
+          cd /tmp/strix
           
           # Verify installation with proper error detection
           echo "Verifying Strix installation..."
