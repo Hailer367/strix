@@ -354,47 +354,24 @@ jobs:
             if [ -n "$TUNNEL_HOST" ] && [ $((ELAPSED % HEALTH_CHECK_INTERVAL)) -eq 0 ]; then
               echo "Performing health check (elapsed: ${ELAPSED}s)..."
               
-              # Create temporary health check script
-              cat > /tmp/health_check.py << 'HEALTH_SCRIPT'
-import grpc
-import sys
-import os
-
-try:
-    from strix.runtime.remote_tool_server.proto import tool_service_pb2, tool_service_pb2_grpc
-    
-    tunnel_host = os.environ.get('TUNNEL_HOST', '')
-    if not tunnel_host:
-        print('TUNNEL_HOST not set')
-        sys.exit(1)
-    
-    server_url = f'{tunnel_host}:443'
-    credentials = grpc.ssl_channel_credentials()
-    channel = grpc.secure_channel(server_url, credentials)
-    stub = tool_service_pb2_grpc.ToolServiceStub(channel)
-    
-    request = tool_service_pb2.HealthRequest()
-    response = stub.HealthCheck(request, timeout=10)
-    
-    if response.healthy:
-        print(f'Server healthy: {response.tool_count} tools, {response.registered_agents} agents')
-        sys.exit(0)
-    else:
-        print('Server unhealthy')
-        sys.exit(1)
-except Exception as e:
-    print(f'Health check failed: {e}')
-    sys.exit(1)
-finally:
-    try:
-        channel.close()
-    except:
-        pass
-HEALTH_SCRIPT
-              
-              # Run health check
+              # Run health check - use a simple Python module invocation
               HEALTH_CHECK_RESULT=0
-              python3 /tmp/health_check.py || HEALTH_CHECK_RESULT=$?
+              PYTHONPATH="$GITHUB_WORKSPACE:${PYTHONPATH:-}" python3 -c '
+          import grpc, sys, os
+          from strix.runtime.remote_tool_server.proto import tool_service_pb2, tool_service_pb2_grpc
+          tunnel_host = os.environ.get("TUNNEL_HOST", "")
+          if not tunnel_host: sys.exit(1)
+          try:
+            channel = grpc.secure_channel(f"{tunnel_host}:443", grpc.ssl_channel_credentials())
+            stub = tool_service_pb2_grpc.ToolServiceStub(channel)
+            resp = stub.HealthCheck(tool_service_pb2.HealthRequest(), timeout=10)
+            print(f"Server healthy: {resp.tool_count} tools, {resp.registered_agents} agents" if resp.healthy else "Server unhealthy")
+            sys.exit(0 if resp.healthy else 1)
+          except Exception as e: print(f"Health check failed: {e}"); sys.exit(1)
+          finally:
+            try: channel.close()
+            except: pass
+              ' || HEALTH_CHECK_RESULT=$?
               
               if [ "$HEALTH_CHECK_RESULT" -ne 0 ]; then
                 FAILED_CHECKS=$((FAILED_CHECKS + 1))
