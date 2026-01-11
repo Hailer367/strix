@@ -17,23 +17,27 @@ from .registry import (
 )
 
 
-# Reduced from 500s to 90s default - tools shouldn't hang for 8+ minutes
+# Increased from 90s to 300s default to allow longer operations
 # This timeout must be greater than STRIX_TOOL_EXECUTION_TIMEOUT in tool_server.py
-SANDBOX_EXECUTION_TIMEOUT = float(os.getenv("STRIX_SANDBOX_EXECUTION_TIMEOUT", "90"))
+SANDBOX_EXECUTION_TIMEOUT = float(os.getenv("STRIX_SANDBOX_EXECUTION_TIMEOUT", "300"))
 SANDBOX_CONNECT_TIMEOUT = float(os.getenv("STRIX_SANDBOX_CONNECT_TIMEOUT", "10"))
 
 
-async def execute_tool(tool_name: str, agent_state: Any | None = None, **kwargs: Any) -> Any:
+async def execute_tool(
+    tool_name: str, agent_state: Any | None = None, timeout: float | None = None, **kwargs: Any
+) -> Any:
     execute_in_sandbox = should_execute_in_sandbox(tool_name)
     sandbox_mode = os.getenv("STRIX_SANDBOX_MODE", "false").lower() == "true"
 
     if execute_in_sandbox and not sandbox_mode:
-        return await _execute_tool_in_sandbox(tool_name, agent_state, **kwargs)
+        return await _execute_tool_in_sandbox(tool_name, agent_state, timeout=timeout, **kwargs)
 
-    return await _execute_tool_locally(tool_name, agent_state, **kwargs)
+    return await _execute_tool_locally(tool_name, agent_state, timeout=timeout, **kwargs)
 
 
-async def _execute_tool_in_sandbox(tool_name: str, agent_state: Any, **kwargs: Any) -> Any:
+async def _execute_tool_in_sandbox(
+    tool_name: str, agent_state: Any, timeout: float | None = None, **kwargs: Any
+) -> Any:
     if not hasattr(agent_state, "sandbox_id") or not agent_state.sandbox_id:
         raise ValueError("Agent state with a valid sandbox_id is required for sandbox execution.")
 
@@ -56,7 +60,7 @@ async def _execute_tool_in_sandbox(tool_name: str, agent_state: Any, **kwargs: A
     # Check if this is a remote HTTP server (via cloudflared) or local HTTP server
     if "trycloudflare.com" in api_url or api_url.startswith("https://"):
         # Use HTTP for remote cloudflared server
-        return await _execute_tool_via_http(tool_name, agent_state, **kwargs)
+        return await _execute_tool_via_http(tool_name, agent_state, timeout=timeout, **kwargs)
     
     # Fallback to HTTP for local Docker server
     tool_server_port = agent_state.sandbox_info.get("tool_server_port", 0)
@@ -76,15 +80,17 @@ async def _execute_tool_in_sandbox(tool_name: str, agent_state: Any, **kwargs: A
         "Content-Type": "application/json",
     }
 
-    timeout = httpx.Timeout(
-        timeout=SANDBOX_EXECUTION_TIMEOUT,
+    exec_timeout = timeout or SANDBOX_EXECUTION_TIMEOUT
+    
+    httpx_timeout = httpx.Timeout(
+        timeout=exec_timeout,
         connect=SANDBOX_CONNECT_TIMEOUT,
     )
 
     async with httpx.AsyncClient(trust_env=False) as client:
         try:
             response = await client.post(
-                request_url, json=request_data, headers=headers, timeout=timeout
+                request_url, json=request_data, headers=headers, timeout=httpx_timeout
             )
             response.raise_for_status()
             response_data = response.json()
@@ -118,19 +124,20 @@ async def _execute_tool_in_sandbox(tool_name: str, agent_state: Any, **kwargs: A
                 raise RuntimeError(
                     f"Timeout connecting to sandbox tool server. The tool '{tool_name}' "
                     f"may be hanging or the sandbox is overloaded. "
-                    f"Timeout was {SANDBOX_EXECUTION_TIMEOUT}s. Original error: {e}"
+                    f"Timeout was {exec_timeout}s. Original error: {e}"
                 ) from e
             raise RuntimeError(f"Request error calling tool server: {e}") from e
-        except httpx.TimeoutException as e:
             raise RuntimeError(
-                f"Sandbox execution timed out after {SANDBOX_EXECUTION_TIMEOUT}s. "
+                f"Sandbox execution timed out after {exec_timeout}s. "
                 f"The tool '{tool_name}' is taking too long to respond. This may indicate: "
                 f"(1) The tool is stuck/hanging, (2) Network congestion, (3) Resource exhaustion in the sandbox. "
                 f"Consider interrupting the tool or increasing STRIX_SANDBOX_EXECUTION_TIMEOUT."
             ) from e
 
 
-async def _execute_tool_via_http(tool_name: str, agent_state: Any, **kwargs: Any) -> Any:
+async def _execute_tool_via_http(
+    tool_name: str, agent_state: Any, timeout: float | None = None, **kwargs: Any
+) -> Any:
     """Execute tool via HTTP remote server (cloudflared-compatible) with agent-configurable timeout."""
     try:
         from strix.runtime.remote_tool_server.http_client import HttpToolClient
@@ -139,8 +146,9 @@ async def _execute_tool_via_http(tool_name: str, agent_state: Any, **kwargs: Any
         auth_token = agent_state.sandbox_token
         agent_id = getattr(agent_state, "agent_id", "unknown")
 
-        # Get timeout from agent_state if available, otherwise use default
-        timeout = getattr(agent_state, "tool_timeout", None)
+        # Get timeout
+        if timeout is None:
+            timeout = getattr(agent_state, "tool_timeout", None)
         if timeout is None:
             # Check if timeout is in kwargs (agent can pass it)
             timeout = kwargs.pop("_timeout", None)
@@ -149,7 +157,7 @@ async def _execute_tool_via_http(tool_name: str, agent_state: Any, **kwargs: Any
 
         client = HttpToolClient(api_url, auth_token, timeout=float(timeout))
         try:
-            result = client.execute_tool(agent_id, tool_name, kwargs)
+            result = client.execute_tool(agent_id, tool_name, kwargs, timeout=float(timeout))
             return result
         finally:
             client.close()
@@ -158,7 +166,9 @@ async def _execute_tool_via_http(tool_name: str, agent_state: Any, **kwargs: Any
         raise RuntimeError(f"HTTP tool execution error: {str(e)}") from e
 
 
-async def _execute_tool_locally(tool_name: str, agent_state: Any | None, **kwargs: Any) -> Any:
+async def _execute_tool_locally(
+    tool_name: str, agent_state: Any | None, timeout: float | None = None, **kwargs: Any
+) -> Any:
     tool_func = get_tool_by_name(tool_name)
     if not tool_func:
         raise ValueError(f"Tool '{tool_name}' not found")
@@ -188,6 +198,8 @@ def validate_tool_availability(tool_name: str | None) -> tuple[bool, str]:
 async def execute_tool_with_validation(
     tool_name: str | None, agent_state: Any | None = None, **kwargs: Any
 ) -> Any:
+    # Extract internal timeout if present
+    timeout = kwargs.pop("_timeout", None)
     is_valid, error_msg = validate_tool_availability(tool_name)
     if not is_valid:
         return f"Error: {error_msg}"
@@ -195,7 +207,7 @@ async def execute_tool_with_validation(
     assert tool_name is not None
 
     try:
-        result = await execute_tool(tool_name, agent_state, **kwargs)
+        result = await execute_tool(tool_name, agent_state, timeout=timeout, **kwargs)
     except Exception as e:  # noqa: BLE001
         error_str = str(e)
         if len(error_str) > 500:
@@ -205,11 +217,15 @@ async def execute_tool_with_validation(
         return result
 
 
-async def execute_tool_invocation(tool_inv: dict[str, Any], agent_state: Any | None = None) -> Any:
+async def execute_tool_invocation(
+    tool_inv: dict[str, Any], agent_state: Any | None = None, timeout: float | None = None
+) -> Any:
     tool_name = tool_inv.get("toolName")
     tool_args = tool_inv.get("args", {})
 
-    return await execute_tool_with_validation(tool_name, agent_state, **tool_args)
+    return await execute_tool_with_validation(
+        tool_name, agent_state, _timeout=timeout, **tool_args
+    )
 
 
 def _check_error_result(result: Any) -> tuple[bool, Any]:
@@ -285,12 +301,89 @@ async def _execute_single_tool(
     args = tool_inv.get("args", {})
     execution_id = None
     should_agent_finish = False
+    
+    is_background = args.get("background", False)
 
     if tracer:
         execution_id = tracer.log_tool_execution_start(agent_id, tool_name, args)
 
+    if is_background:
+        # Create a background task
+        async def background_wrapper():
+            try:
+                # Remove background and timeout args before executing
+                clean_args = {k: v for k, v in args.items() if k not in ("background", "timeout")}
+                tool_inv_copy = {**tool_inv, "args": clean_args}
+                
+                # Extract timeout for invocation
+                timeout = args.get("timeout")
+                try:
+                    if timeout:
+                        timeout = float(timeout)
+                except (ValueError, TypeError):
+                    timeout = None
+
+                result = await execute_tool_invocation(tool_inv_copy, agent_state, timeout=timeout)
+                is_error, error_payload = _check_error_result(result)
+                
+                _update_tracer_with_result(tracer, execution_id, is_error, result, error_payload)
+                
+                # Notify agent via message queue
+                try:
+                    from strix.tools.agents_graph.agents_graph_actions import _agent_messages
+                    from datetime import datetime, UTC
+                    from uuid import uuid4
+                    
+                    if agent_id not in _agent_messages:
+                        _agent_messages[agent_id] = []
+                    
+                    obs_xml, _ = _format_tool_result(tool_name, result)
+                    
+                    _agent_messages[agent_id].append({
+                        "id": f"bg_{uuid4().hex[:8]}",
+                        "from": "system_background",
+                        "to": agent_id,
+                        "content": f"Background tool completion notice:\n{obs_xml}",
+                        "message_type": "information",
+                        "priority": "normal",
+                        "timestamp": datetime.now(UTC).isoformat(),
+                        "delivered": True,
+                        "read": False,
+                    })
+                except Exception as e:
+                    import logging
+                    logging.getLogger(__name__).warning(f"Failed to send background completion message: {e}")
+                    
+            except Exception as e:
+                if tracer and execution_id:
+                    tracer.update_tool_execution(execution_id, "error", str(e))
+                import logging
+                logging.getLogger(__name__).exception(f"Error in background tool {tool_name}")
+
+        import asyncio
+        asyncio.create_task(background_wrapper())
+        
+        observation_xml = (
+            f"<tool_result>\n<tool_name>{tool_name}</tool_name>\n"
+            f"<result>Tool started in background. You will receive a notification when it completes. "
+            f"You can continue with other tasks.</result>\n</tool_result>"
+        )
+        return observation_xml, [], False
+
     try:
-        result = await execute_tool_invocation(tool_inv, agent_state)
+        # Extract timeout
+        timeout = args.get("timeout")
+        try:
+            if timeout:
+                timeout = float(timeout)
+        except (ValueError, TypeError):
+            timeout = None
+            
+        # Remove background and timeout args
+        clean_args = {k: v for k, v in args.items() if k not in ("background", "timeout")}
+        tool_inv_copy = {**tool_inv, "args": clean_args}
+
+        result = await execute_tool_invocation(tool_inv_copy, agent_state, timeout=timeout)
 
         is_error, error_payload = _check_error_result(result)
 

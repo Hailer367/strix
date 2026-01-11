@@ -84,7 +84,7 @@ class ServerMetrics:
         self._request_count = 0
         self._error_count = 0
         self._start_time = time.time()
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._recent_requests: deque = deque(maxlen=1000)  # Last 1000 requests
 
     def record_tool_execution(

@@ -12,7 +12,8 @@ logger = logging.getLogger(__name__)
 
 # Default thread pool size for concurrent execution
 DEFAULT_POOL_SIZE = 10
-TOOL_EXECUTION_TIMEOUT = 60.0  # seconds
+import os
+TOOL_EXECUTION_TIMEOUT = float(os.getenv("STRIX_TOOL_EXECUTION_TIMEOUT", "300.0"))  # seconds
 
 
 class ToolExecutor:
@@ -42,7 +43,11 @@ class ToolExecutor:
             logger.warning(f"Failed to pre-initialize tools: {e}")
 
     def execute_tool(
-        self, tool_name: str, kwargs: dict[str, Any], agent_state: Any | None = None
+        self, 
+        tool_name: str, 
+        kwargs: dict[str, Any], 
+        agent_state: Any | None = None,
+        timeout: float | None = None
     ) -> dict[str, Any]:
         """Execute a single tool synchronously.
 
@@ -93,7 +98,12 @@ class ToolExecutor:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 try:
-                    result = loop.run_until_complete(result)
+                    if timeout:
+                        result = loop.run_until_complete(asyncio.wait_for(result, timeout=timeout))
+                    else:
+                        result = loop.run_until_complete(result)
+                except asyncio.TimeoutError:
+                    return {"error": f"Tool execution timed out after {timeout} seconds"}
                 finally:
                     loop.close()
 

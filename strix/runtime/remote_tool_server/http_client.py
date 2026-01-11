@@ -17,8 +17,10 @@ from .retry_handler import retry_with_backoff
 
 logger = logging.getLogger(__name__)
 
+import os
+
 # Default timeouts
-DEFAULT_TIMEOUT = 60.0
+DEFAULT_TIMEOUT = float(os.getenv("STRIX_TOOL_TIMEOUT", "300.0"))
 DEFAULT_CONNECT_TIMEOUT = 10.0
 
 
@@ -111,7 +113,8 @@ class HttpToolClient:
         self, 
         agent_id: str, 
         tool_name: str, 
-        kwargs: dict[str, Any]
+        kwargs: dict[str, Any],
+        timeout: float | None = None
     ) -> Any:
         """Execute a single tool via HTTP with caching.
 
@@ -140,7 +143,9 @@ class HttpToolClient:
                     "tool_name": tool_name,
                     "kwargs": kwargs,
                     "auth_token": self.auth_token,
-                }
+                    "timeout": timeout,
+                },
+                timeout=timeout
             )
             
             duration = time.time() - start_time
