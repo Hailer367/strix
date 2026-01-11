@@ -325,6 +325,9 @@ jobs:
           SERVER_TIMEOUT_MINUTES="${{ env.SERVER_TIMEOUT }}"
           SERVER_TIMEOUT_SECONDS=$((SERVER_TIMEOUT_MINUTES * 60))
           
+          # Export for Python script
+          export TUNNEL_HOST
+          
           if [ -z "$SERVER_PID" ]; then
             echo "::error::Server PID not available"
             exit 1
@@ -352,38 +355,45 @@ jobs:
               echo "Performing health check (elapsed: ${ELAPSED}s)..."
               
               # Try to connect via gRPC health check
-              python3 << 'PYEOF' || {
-                import grpc
-                import sys
-                try:
-                  from strix.runtime.remote_tool_server.proto import tool_service_pb2, tool_service_pb2_grpc
-                  
-                  server_url = "$TUNNEL_HOST:443"
-                  credentials = grpc.ssl_channel_credentials()
-                  channel = grpc.secure_channel(server_url, credentials)
-                  stub = tool_service_pb2_grpc.ToolServiceStub(channel)
-                  
-                  request = tool_service_pb2.HealthRequest()
-                  response = stub.HealthCheck(request, timeout=10)
-                  
-                  if response.healthy:
-                    print(f"✓ Server healthy: {response.tool_count} tools, {response.registered_agents} agents")
-                    sys.exit(0)
-                  else:
-                    print(f"✗ Server unhealthy")
-                    sys.exit(1)
-                except Exception as e:
-                  print(f"Health check failed: {e}")
-                  sys.exit(1)
-                finally:
-                  try:
-                    channel.close()
-                  except:
-                    pass
-              }
-              PYEOF
+              HEALTH_CHECK_RESULT=0
+              python3 << PYEOF || HEALTH_CHECK_RESULT=$?
+import grpc
+import sys
+import os
+
+try:
+  from strix.runtime.remote_tool_server.proto import tool_service_pb2, tool_service_pb2_grpc
+  
+  tunnel_host = os.environ.get('TUNNEL_HOST', '')
+  if not tunnel_host:
+    print("TUNNEL_HOST not set")
+    sys.exit(1)
+  
+  server_url = f"{tunnel_host}:443"
+  credentials = grpc.ssl_channel_credentials()
+  channel = grpc.secure_channel(server_url, credentials)
+  stub = tool_service_pb2_grpc.ToolServiceStub(channel)
+  
+  request = tool_service_pb2.HealthRequest()
+  response = stub.HealthCheck(request, timeout=10)
+  
+  if response.healthy:
+    print(f"✓ Server healthy: {response.tool_count} tools, {response.registered_agents} agents")
+    sys.exit(0)
+  else:
+    print(f"✗ Server unhealthy")
+    sys.exit(1)
+except Exception as e:
+  print(f"Health check failed: {e}")
+  sys.exit(1)
+finally:
+  try:
+    channel.close()
+  except:
+    pass
+PYEOF
               
-              if [ $? -ne 0 ]; then
+              if [ $HEALTH_CHECK_RESULT -ne 0 ]; then
                 FAILED_CHECKS=$((FAILED_CHECKS + 1))
                 echo "::warning::Health check failed (${FAILED_CHECKS}/${MAX_FAILED_CHECKS})"
                 
