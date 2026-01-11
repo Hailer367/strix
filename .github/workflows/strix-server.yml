@@ -132,7 +132,7 @@ jobs:
           }
           
           # Start server in background with all environment variables
-          # Use env command to ensure all variables are passed to the background process
+          # Run the server script directly to ensure proper PYTHONPATH usage
           cd "$GITHUB_WORKSPACE"
           nohup env \
             PYTHONPATH="$GITHUB_WORKSPACE:${PYTHONPATH:-}" \
@@ -140,7 +140,7 @@ jobs:
             STRIX_SERVER_TOKEN="$STRIX_SERVER_TOKEN" \
             STRIXDB_TOKEN="$STRIXDB_TOKEN" \
             STRIX_TOOL_POOL_SIZE="$STRIX_TOOL_POOL_SIZE" \
-            python -m strix.runtime.remote_tool_server.server > /tmp/server.log 2>&1 &
+            python "$GITHUB_WORKSPACE/strix/runtime/remote_tool_server/server.py" > /tmp/server.log 2>&1 &
           SERVER_PID=$!
           echo "$SERVER_PID" > /tmp/server.pid
           
