@@ -196,13 +196,6 @@ class DockerRuntime(AbstractRuntime):
                     run_kwargs["cap_add"] = ALL_CAPABILITIES
                     logger.info(f"Adding {len(ALL_CAPABILITIES)} capabilities for pentest functionality")
                 
-                # Add sysctls for network functionality (ping, raw sockets, etc.)
-                # These are needed even without privileged mode
-                run_kwargs["sysctls"] = {
-                    "net.ipv4.ping_group_range": "0 2147483647",  # Allow ping without root
-                    "net.ipv4.ip_unprivileged_port_start": "0",   # Allow binding to any port
-                }
-                
                 # Security options to allow full access
                 run_kwargs["security_opt"] = [
                     "seccomp=unconfined",  # Disable seccomp filtering
@@ -214,6 +207,14 @@ class DockerRuntime(AbstractRuntime):
                     # This allows the container to access localhost services on the host
                     run_kwargs["network_mode"] = "host"
                     logger.info("Using host network mode for CI connectivity")
+                    
+                    # CRITICAL: Do NOT add sysctls when using host network mode!
+                    # Sysctls like net.ipv4.ping_group_range and net.ipv4.ip_unprivileged_port_start
+                    # are network-namespace specific and CANNOT be used with host networking.
+                    # The container shares the host's network namespace, so these settings
+                    # would need to be applied to the host itself, not the container.
+                    # Error if we try: "sysctl not allowed in host network namespace"
+                    logger.info("Skipping sysctls (not supported with host network mode)")
                     
                     # Mount /tmp directory to share dashboard state file with host
                     # This allows the external dashboard to read state updates from Strix
@@ -235,6 +236,16 @@ class DockerRuntime(AbstractRuntime):
                     # This helps with networking issues when inside Docker container
                     run_kwargs["dns"] = FALLBACK_DNS_SERVERS
                     logger.info(f"Using bridge network with DNS servers: {FALLBACK_DNS_SERVERS}")
+                    
+                    # Add sysctls for network functionality (ping, raw sockets, etc.)
+                    # IMPORTANT: These can ONLY be used with bridge networking, NOT host networking!
+                    # With host network mode, the container shares the host's network namespace
+                    # and sysctls like these are not allowed (they would affect the host).
+                    run_kwargs["sysctls"] = {
+                        "net.ipv4.ping_group_range": "0 2147483647",  # Allow ping without root
+                        "net.ipv4.ip_unprivileged_port_start": "0",   # Allow binding to any port
+                    }
+                    logger.info("Added sysctls for bridge network mode")
                 
                 container = self.client.containers.run(**run_kwargs)
 
