@@ -62,6 +62,9 @@ httpx = "^0.28.0"
 # gRPC dependencies for remote tool server
 grpcio = "^1.60.0"
 grpcio-tools = "^1.60.0"
+# FastAPI dependencies for tool server
+fastapi = "*"
+uvicorn = "*"
 # PyNaCl for GitHub secret encryption
 pynacl = "^1.5.0"
 
@@ -72,9 +75,7 @@ google-cloud-aiplatform = { version = ">=1.38", optional = true }
 opik = { version = ">=1.0.0", optional = true }
 
 # Sandbox-only dependencies (only needed inside Docker container)
-fastapi = { version = "*", optional = true }
-uvicorn = { version = "*", optional = true }
-ipython = { version = "^9.3.0", optional = true }
+ipython = "^9.3.0", optional = true }
 openhands-aci = { version = "^0.3.0", optional = true }
 playwright = { version = "^1.48.0", optional = true }
 gql = { version = "^3.5.3", extras = ["requests"], optional = true }
@@ -84,7 +85,7 @@ numpydoc = { version = "^1.8.0", optional = true }
 
 [tool.poetry.extras]
 vertex = ["google-cloud-aiplatform"]
-sandbox = ["fastapi", "uvicorn", "ipython", "openhands-aci", "playwright", "gql", "pyte", "libtmux", "numpydoc"]
+sandbox = ["ipython", "openhands-aci", "playwright", "gql", "pyte", "libtmux", "numpydoc"]
 litellm = ["litellm"]
 opik = ["opik"]
 

@@ -60,7 +60,7 @@ jobs:
           if ! poetry install --no-interaction 2>&1; then
             echo "::warning::Poetry install had issues, installing dependencies manually..."
             # Install core dependencies manually
-            pip install jinja2 httpx tenacity requests pydantic rich docker textual xmltodict
+            pip install jinja2 httpx tenacity requests pydantic rich docker textual xmltodict fastapi uvicorn
           fi
           
           # Install PyNaCl for secret encryption
