@@ -68,9 +68,16 @@ jobs:
         run: |
           set -euo pipefail
           echo "::group::Generating gRPC code from proto files"
-          python -m strix.runtime.remote_tool_server.generate_proto
+          cd "$GITHUB_WORKSPACE"
+          # Install package in development mode so imports work
+          pip install -e . 2>/dev/null || true
+          # Generate proto files
+          python -m strix.runtime.remote_tool_server.generate_proto || {
+            echo "::warning::Module import failed, trying direct script execution"
+            python strix/strix/runtime/remote_tool_server/generate_proto.py
+          }
           echo "Generated gRPC code"
-          ls -la strix/strix/runtime/remote_tool_server/proto/
+          ls -la strix/strix/runtime/remote_tool_server/proto/ || true
           echo "::endgroup::"
 
       - name: Generate Server Token
