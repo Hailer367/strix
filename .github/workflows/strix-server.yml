@@ -354,9 +354,8 @@ jobs:
             if [ -n "$TUNNEL_HOST" ] && [ $((ELAPSED % HEALTH_CHECK_INTERVAL)) -eq 0 ]; then
               echo "Performing health check (elapsed: ${ELAPSED}s)..."
               
-              # Try to connect via gRPC health check
-              HEALTH_CHECK_RESULT=0
-              python3 -c "
+              # Create temporary health check script
+              cat > /tmp/health_check.py << 'HEALTH_SCRIPT'
 import grpc
 import sys
 import os
@@ -391,7 +390,10 @@ finally:
     channel.close()
   except:
     pass
-" || HEALTH_CHECK_RESULT=$?
+HEALTH_SCRIPT
+              
+              # Run health check
+              python3 /tmp/health_check.py || HEALTH_CHECK_RESULT=$?
               
               if [ $HEALTH_CHECK_RESULT -ne 0 ]; then
                 FAILED_CHECKS=$((FAILED_CHECKS + 1))
