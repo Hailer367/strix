@@ -10,6 +10,11 @@ PERFORMANCE OPTIMIZATIONS (v2):
 - Reduced latency with direct async execution
 - Better resource utilization for parallel tool calls
 
+NETWORKING (v2.1):
+- Added network connectivity diagnostics
+- Better error messages for network issues
+- Health check includes network status
+
 Environment Variables:
 - STRIX_TOOL_EXECUTION_TIMEOUT: Timeout per tool execution (default: 60s)
 - STRIX_TOOL_POOL_SIZE: Number of concurrent tool workers (default: 10)
@@ -300,14 +305,59 @@ async def register_agent(
     return {"status": "registered", "agent_id": agent_id}
 
 
+def _check_network_connectivity() -> dict[str, Any]:
+    """Check network connectivity from inside the sandbox container."""
+    import socket
+    import subprocess
+    
+    network_status = {
+        "dns_resolution": False,
+        "external_connectivity": False,
+        "localhost_accessible": True,  # Assume true if we're running
+        "issues": [],
+    }
+    
+    # Check DNS resolution
+    try:
+        socket.gethostbyname("google.com")
+        network_status["dns_resolution"] = True
+    except socket.gaierror as e:
+        network_status["issues"].append(f"DNS resolution failed: {e}")
+    
+    # Check external connectivity
+    try:
+        # Try to connect to a known public IP
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(5)
+        result = sock.connect_ex(("8.8.8.8", 53))  # Google DNS
+        if result == 0:
+            network_status["external_connectivity"] = True
+        sock.close()
+    except (socket.error, OSError) as e:
+        network_status["issues"].append(f"External connectivity failed: {e}")
+    
+    # Check if we can resolve the host gateway (for reaching host services)
+    try:
+        socket.gethostbyname("host.docker.internal")
+        network_status["host_gateway_available"] = True
+    except socket.gaierror:
+        network_status["host_gateway_available"] = False
+        # Not an error in host network mode
+    
+    return network_status
+
+
 @app.get("/health")
 async def health_check() -> dict[str, Any]:
-    """Health check endpoint."""
+    """Health check endpoint with network diagnostics."""
     executor = get_executor()
+    
+    # Check network connectivity
+    network_status = _check_network_connectivity()
     
     return {
         "status": "healthy",
-        "version": "2.0.0",  # New concurrent version
+        "version": "2.1.0",  # Updated version with network diagnostics
         "sandbox_mode": str(SANDBOX_MODE),
         "environment": "sandbox" if SANDBOX_MODE else "main",
         "auth_configured": "true" if EXPECTED_TOKEN else "false",
@@ -316,6 +366,7 @@ async def health_check() -> dict[str, Any]:
         "registered_agents": len(_registered_agents),
         "agents": list(_registered_agents),
         "tools_initialized": _tools_initialized,
+        "network": network_status,
     }
 
 

@@ -824,6 +824,12 @@ jobs:
           STRIX_DASHBOARD_STATE_FILE: /tmp/strix_dashboard_state.json
           # Enable host network mode for Docker container
           STRIX_USE_HOST_NETWORK: 'true'
+          # Enable privileged mode for full root access in Docker container
+          # This allows apt-get, ping, raw sockets, and other pentest tools to work
+          STRIX_PRIVILEGED_MODE: 'true'
+          # Minimum time usage percentage before allowing scan to finish
+          # Agent must use at least 80% of allocated time before calling finish_scan
+          STRIX_MIN_TIME_PERCENT: '80'
           # Timeout settings to prevent tools from hanging indefinitely
           # These prevent the agent from getting stuck on slow/unresponsive operations
           STRIX_TOOL_EXECUTION_TIMEOUT: '60'     # Timeout per tool execution in sandbox (seconds)

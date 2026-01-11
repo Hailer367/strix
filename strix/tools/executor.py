@@ -81,14 +81,45 @@ async def _execute_tool_in_sandbox(tool_name: str, agent_state: Any, **kwargs: A
             response.raise_for_status()
             response_data = response.json()
             if response_data.get("error"):
-                raise RuntimeError(f"Sandbox execution error: {response_data['error']}")
+                error_msg = response_data['error']
+                # Check if it's a network-related error inside the sandbox
+                network_errors = ["network", "connection", "dns", "timeout", "unreachable", "refused"]
+                if any(err in error_msg.lower() for err in network_errors):
+                    raise RuntimeError(
+                        f"Sandbox network error: {error_msg}. "
+                        f"The tool '{tool_name}' failed due to network connectivity issues inside the Docker container. "
+                        f"This may be due to: (1) DNS resolution failure, (2) External network not accessible, "
+                        f"(3) Firewall/proxy blocking connections. Try using host network mode (STRIX_USE_HOST_NETWORK=true)."
+                    )
+                raise RuntimeError(f"Sandbox execution error: {error_msg}")
             return response_data.get("result")
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 401:
                 raise RuntimeError("Authentication failed: Invalid or missing sandbox token") from e
             raise RuntimeError(f"HTTP error calling tool server: {e.response.status_code}") from e
         except httpx.RequestError as e:
+            error_str = str(e)
+            # Provide more helpful error messages for common issues
+            if "connect" in error_str.lower() or "refused" in error_str.lower():
+                raise RuntimeError(
+                    f"Cannot connect to sandbox tool server at {request_url}. "
+                    f"The container may not be running or the tool server hasn't started. "
+                    f"Original error: {e}"
+                ) from e
+            if "timeout" in error_str.lower():
+                raise RuntimeError(
+                    f"Timeout connecting to sandbox tool server. The tool '{tool_name}' "
+                    f"may be hanging or the sandbox is overloaded. "
+                    f"Timeout was {SANDBOX_EXECUTION_TIMEOUT}s. Original error: {e}"
+                ) from e
             raise RuntimeError(f"Request error calling tool server: {e}") from e
+        except httpx.TimeoutException as e:
+            raise RuntimeError(
+                f"Sandbox execution timed out after {SANDBOX_EXECUTION_TIMEOUT}s. "
+                f"The tool '{tool_name}' is taking too long to respond. This may indicate: "
+                f"(1) The tool is stuck/hanging, (2) Network congestion, (3) Resource exhaustion in the sandbox. "
+                f"Consider interrupting the tool or increasing STRIX_SANDBOX_EXECUTION_TIMEOUT."
+            ) from e
 
 
 async def _execute_tool_locally(tool_name: str, agent_state: Any | None, **kwargs: Any) -> Any:

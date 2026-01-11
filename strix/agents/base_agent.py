@@ -191,27 +191,55 @@ class BaseAgent(metaclass=AgentMeta):
         from strix.telemetry.tracer import get_global_tracer
 
         tracer = get_global_tracer()
+        
+        # Track if we've given the agent a final chance to finish after time warning
+        time_expired_final_iteration_given = False
+        time_expired_iterations_after_warning = 0
+        MAX_ITERATIONS_AFTER_TIME_EXPIRED = 3  # Allow 3 more iterations after time expires for cleanup
 
         while True:
             self._check_agent_messages(self.state)
             
-            # Check for time-based warnings
+            # Check for time-based warnings and enforce timeframe strictly
             time_warning = self.state.get_time_warning_message()
             if time_warning:
                 self.state.add_message("user", time_warning)
                 logger.info(f"Time warning sent to agent: {time_warning[:100]}...")
             
-            # Check if session time has expired
+            # Check if session time has expired - HARD ENFORCEMENT
             if self.state.is_session_expired() and self.state.session_start_time is not None:
-                if self.non_interactive:
-                    logger.warning("Session time expired, forcing completion")
-                    self.state.set_completed({"success": True, "reason": "time_expired"})
+                time_expired_iterations_after_warning += 1
+                
+                # Give a final ultimatum if not already given
+                if not time_expired_final_iteration_given:
+                    time_expired_final_iteration_given = True
+                    final_time_msg = (
+                        "🚨 SESSION TIME HAS EXPIRED! You have EXHAUSTED your allocated timeframe. "
+                        f"You have {MAX_ITERATIONS_AFTER_TIME_EXPIRED} iterations remaining to wrap up. "
+                        "You MUST call the finish_scan tool NOW with your findings. "
+                        "DO NOT start any new tasks. DO NOT make any more tool calls except finish_scan. "
+                        "Your session will be forcefully terminated if you do not finish immediately."
+                    )
+                    self.state.add_message("user", final_time_msg)
+                    logger.warning(f"Session time expired, giving agent {MAX_ITERATIONS_AFTER_TIME_EXPIRED} final iterations")
+                
+                # Force completion after grace period - BOTH interactive and non-interactive modes
+                if time_expired_iterations_after_warning >= MAX_ITERATIONS_AFTER_TIME_EXPIRED:
+                    logger.warning("Session time expired and grace period exhausted, forcing completion")
+                    self.state.set_completed({"success": True, "reason": "time_expired_forced"})
                     if tracer:
                         tracer.update_agent_status(self.state.agent_id, "completed")
                     return self.state.final_result or {}
-                # In interactive mode, just warn but don't force stop
 
             if self.state.is_waiting_for_input():
+                # Even in waiting state, check if time has truly expired
+                if self.state.is_session_expired() and self.state.session_start_time is not None:
+                    if time_expired_iterations_after_warning >= MAX_ITERATIONS_AFTER_TIME_EXPIRED:
+                        logger.warning("Time expired during wait state, forcing completion")
+                        self.state.set_completed({"success": True, "reason": "time_expired_forced"})
+                        if tracer:
+                            tracer.update_agent_status(self.state.agent_id, "completed")
+                        return self.state.final_result or {}
                 await self._wait_for_input()
                 continue
 
