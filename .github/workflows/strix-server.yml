@@ -82,18 +82,49 @@ jobs:
           echo "Generated gRPC code"
           ls -la strix/runtime/remote_tool_server/proto/ || true
           
-          # Verify proto files are importable and PROTO_AVAILABLE is True
+          # Verify proto files are importable by starting a fresh Python process
           python -c "
-          from strix.runtime.remote_tool_server.proto import tool_service_pb2
-          print('Proto import successful')
-          from strix.runtime.remote_tool_server import server
-          print(f'PROTO_AVAILABLE = {server.PROTO_AVAILABLE}')
-          if not server.PROTO_AVAILABLE:
-              print('ERROR: PROTO_AVAILABLE is False!')
-              import sys
+          import sys
+          import os
+          
+          # Debug: Print current working directory and PYTHONPATH
+          print(f'CWD: {os.getcwd()}')
+          print(f'PYTHONPATH: {os.environ.get(\"PYTHONPATH\", \"not set\")}')
+          
+          # Check if proto files exist on disk
+          proto_path = 'strix/runtime/remote_tool_server/proto/tool_service_pb2.py'
+          print(f'Proto file exists on disk: {os.path.exists(proto_path)}')
+          
+          # Now try the import - this is a fresh Python process so no caching issues
+          try:
+              from strix.runtime.remote_tool_server.proto import tool_service_pb2
+              print('Direct proto import: SUCCESS')
+          except ImportError as e:
+              print(f'Direct proto import: FAILED - {e}')
               sys.exit(1)
+          
+          # Check server module
+          from strix.runtime.remote_tool_server import server
+          print(f'PROTO_AVAILABLE: {server.PROTO_AVAILABLE}')
+          print(f'tool_service_pb2: {server.tool_service_pb2}')
+          print(f'tool_service_pb2_grpc: {server.tool_service_pb2_grpc}')
+          
+          if not server.PROTO_AVAILABLE:
+              print('ERROR: PROTO_AVAILABLE is False in fresh Python process!')
+              print('This indicates the import in server.py itself is failing')
+              # Try to manually debug the import
+              import traceback
+              try:
+                  from strix.runtime.remote_tool_server.proto import tool_service_pb2
+                  from strix.runtime.remote_tool_server.proto import tool_service_pb2_grpc
+                  print('Manual re-import in same process: SUCCESS')
+              except ImportError:
+                  print('Manual re-import in same process: FAILED')
+                  traceback.print_exc()
+              sys.exit(1)
+          print('All checks passed!')
           " || {
-            echo "::error::Proto files generated but not importable or PROTO_AVAILABLE is False"
+            echo "::error::Proto files check failed"
             exit 1
           }
           
