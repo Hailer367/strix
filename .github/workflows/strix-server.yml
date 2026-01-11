@@ -100,23 +100,47 @@ jobs:
           export STRIX_SERVER_TOKEN="${{ steps.token.outputs.token }}"
           export STRIXDB_TOKEN="${{ secrets.STRIXDB_TOKEN }}"
           export STRIX_TOOL_POOL_SIZE="10"
+          export PYTHONPATH="$GITHUB_WORKSPACE:$PYTHONPATH"
+          
+          # Verify proto files were generated
+          if [ ! -f "$GITHUB_WORKSPACE/strix/strix/runtime/remote_tool_server/proto/tool_service_pb2.py" ]; then
+            echo "::error::Proto files not generated"
+            exit 1
+          fi
+          
+          # Test server import first
+          cd "$GITHUB_WORKSPACE"
+          python -c "from strix.runtime.remote_tool_server.server import serve; print('Server module imported successfully')" || {
+            echo "::error::Failed to import server module"
+            python -c "from strix.runtime.remote_tool_server.server import serve" 2>&1
+            exit 1
+          }
           
           # Start server in background
-          cd "$GITHUB_WORKSPACE"
           nohup python -m strix.runtime.remote_tool_server.server > /tmp/server.log 2>&1 &
           SERVER_PID=$!
           echo "$SERVER_PID" > /tmp/server.pid
           
-          # Wait for server to start
-          sleep 5
+          # Wait for server to start and check logs
+          sleep 8
+          
+          # Check server logs for errors
+          if [ -f /tmp/server.log ]; then
+            echo "Server startup logs:"
+            cat /tmp/server.log || true
+          fi
           
           # Check if server is running
           if ! kill -0 $SERVER_PID 2>/dev/null; then
-            echo "::error::Server failed to start"
-            cat /tmp/server.log || true
+            echo "::error::Server failed to start (PID: $SERVER_PID)"
+            if [ -f /tmp/server.log ]; then
+              echo "Full server logs:"
+              cat /tmp/server.log
+            fi
             exit 1
           fi
           
+          # Test server health (if possible)
           echo "Server started with PID: $SERVER_PID"
           echo "server_pid=$SERVER_PID" >> "$GITHUB_OUTPUT"
           echo "::endgroup::"

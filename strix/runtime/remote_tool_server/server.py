@@ -231,6 +231,19 @@ def serve() -> None:
         logger.error("  python -m strix.runtime.remote_tool_server.generate_proto")
         sys.exit(1)
 
+    # Initialize tools before starting server
+    logger.info("Initializing tools...")
+    try:
+        # Import tools to ensure they're registered
+        import strix.tools  # noqa: F401
+        from strix.tools.registry import get_tool_names
+        
+        tool_count = len(get_tool_names())
+        logger.info(f"Initialized {tool_count} tools")
+    except Exception as e:
+        logger.warning(f"Tool initialization warning: {e}")
+        # Continue anyway - tools will be loaded on demand
+
     # Create gRPC server
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=TOOL_POOL_SIZE))
     
@@ -240,13 +253,22 @@ def serve() -> None:
     )
 
     # Bind to port
-    server.add_insecure_port(f"[::]:{SERVER_PORT}")
+    try:
+        server.add_insecure_port(f"[::]:{SERVER_PORT}")
+    except Exception as e:
+        logger.error(f"Failed to bind to port {SERVER_PORT}: {e}")
+        sys.exit(1)
     
     logger.info(f"Starting Strix Remote Tool Server on port {SERVER_PORT}")
     logger.info(f"Tool pool size: {TOOL_POOL_SIZE}")
     logger.info(f"Authentication: {'Enabled' if AUTH_TOKEN else 'Disabled'}")
 
-    server.start()
+    try:
+        server.start()
+        logger.info("Server started successfully")
+    except Exception as e:
+        logger.error(f"Failed to start server: {e}")
+        sys.exit(1)
 
     def signal_handler(sig: int, frame: Any) -> None:
         """Handle shutdown signals."""
