@@ -131,7 +131,7 @@ async def _execute_tool_in_sandbox(tool_name: str, agent_state: Any, **kwargs: A
 
 
 async def _execute_tool_via_grpc(tool_name: str, agent_state: Any, **kwargs: Any) -> Any:
-    """Execute tool via gRPC remote server."""
+    """Execute tool via gRPC remote server with agent-configurable timeout."""
     try:
         from strix.runtime.remote_tool_server.grpc_client import GrpcToolClient
 
@@ -141,7 +141,15 @@ async def _execute_tool_via_grpc(tool_name: str, agent_state: Any, **kwargs: Any
         auth_token = agent_state.sandbox_token
         agent_id = getattr(agent_state, "agent_id", "unknown")
 
-        client = GrpcToolClient(server_url, auth_token)
+        # Get timeout from agent_state if available, otherwise use default
+        timeout = getattr(agent_state, "tool_timeout", None)
+        if timeout is None:
+            # Check if timeout is in kwargs (agent can pass it)
+            timeout = kwargs.pop("_timeout", None)
+        if timeout is None:
+            timeout = SANDBOX_EXECUTION_TIMEOUT
+
+        client = GrpcToolClient(server_url, auth_token, timeout=float(timeout))
         try:
             result = client.execute_tool(agent_id, tool_name, kwargs)
             return result

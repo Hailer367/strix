@@ -146,3 +146,104 @@ class StrixDBClient:
     def is_configured(self) -> bool:
         """Check if StrixDB is properly configured."""
         return bool(self.token and self.owner)
+
+    def save_artifacts_batch(
+        self,
+        artifacts: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Save multiple artifacts to StrixDB in a single batch operation.
+
+        Args:
+            artifacts: List of artifact dictionaries, each with:
+                - category: Category for the artifact
+                - name: Name of the artifact
+                - content: Content to save
+                - description: Description (optional)
+                - tags: List of tags (optional)
+
+        Returns:
+            Dictionary with operation result
+        """
+        if not self.token or not self.owner:
+            return {
+                "success": False,
+                "error": "StrixDB not configured. Ensure STRIXDB_TOKEN is set.",
+            }
+
+        repo_path = self._get_repo_path()
+        if not repo_path:
+            return {
+                "success": False,
+                "error": "Failed to determine repository path",
+            }
+
+        results = []
+        errors = []
+
+        for artifact in artifacts:
+            category = artifact.get("category", "misc")
+            name = artifact.get("name", "unnamed")
+            content = artifact.get("content", "")
+            description = artifact.get("description", "")
+            tags = artifact.get("tags", [])
+
+            # Sanitize category and name
+            category = category.lower().replace(" ", "_")
+            name = name.replace(" ", "_").replace("/", "_")
+
+            # Create file path
+            file_path = f"{category}/{name}.json"
+
+            # Create metadata
+            metadata = {
+                "name": name,
+                "description": description,
+                "tags": tags or [],
+                "category": category,
+                "content": content,
+                "created_at": str(os.urandom(8).hex()),  # Simple timestamp placeholder
+            }
+
+            try:
+                # Check if file exists
+                url = f"{self.api_base}/repos/{repo_path}/contents/{file_path}"
+                response = requests.get(url, headers=self._get_headers(), timeout=10)
+
+                content_encoded = base64.b64encode(json.dumps(metadata).encode()).decode()
+                data: dict[str, Any] = {
+                    "message": f"Add/update {category}/{name}",
+                    "content": content_encoded,
+                    "branch": self.branch,
+                }
+
+                if response.status_code == 200:
+                    # File exists, update it
+                    data["sha"] = response.json()["sha"]
+                    data["message"] = f"Update {category}/{name}"
+
+                # Create or update file
+                response = requests.put(url, headers=self._get_headers(), json=data, timeout=30)
+
+                if response.status_code in (200, 201):
+                    results.append({"success": True, "path": file_path, "name": name})
+                else:
+                    error_msg = f"Failed to save {category}/{name}: {response.status_code}"
+                    errors.append(error_msg)
+                    results.append({"success": False, "error": error_msg, "name": name})
+
+            except requests.RequestException as e:
+                error_msg = f"Request error saving {category}/{name}: {str(e)}"
+                logger.exception(error_msg)
+                errors.append(error_msg)
+                results.append({"success": False, "error": error_msg, "name": name})
+
+        # Return batch result
+        success_count = sum(1 for r in results if r.get("success"))
+        return {
+            "success": len(errors) == 0,
+            "total": len(artifacts),
+            "succeeded": success_count,
+            "failed": len(errors),
+            "results": results,
+            "errors": errors if errors else None,
+        }

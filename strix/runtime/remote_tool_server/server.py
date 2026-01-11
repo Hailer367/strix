@@ -47,6 +47,13 @@ def get_tool_executor() -> Any:
     return _tool_executor
 
 
+def get_metrics() -> Any:
+    """Get metrics instance."""
+    from .metrics import get_metrics as get_metrics_instance
+
+    return get_metrics_instance()
+
+
 def verify_token(token: str) -> None:
     """Verify authentication token."""
     if not AUTH_TOKEN:
@@ -78,7 +85,16 @@ class ToolServiceServicer:
                     kwargs[key] = value
 
             executor = get_tool_executor()
+            # Record execution start for metrics
+            import time
+            exec_start = time.time()
             result = executor.execute_tool(request.tool_name, kwargs)
+            # Record metrics
+            exec_duration = time.time() - exec_start
+            metrics = get_metrics()
+            metrics.record_tool_execution(
+                request.tool_name, exec_duration, "error" not in result
+            )
 
             # Create response using generated proto
             response = tool_service_pb2.ToolResponse()
@@ -168,13 +184,19 @@ class ToolServiceServicer:
             return batch_response
 
     def HealthCheck(self, request: Any, context: Any) -> Any:
-        """Health check endpoint."""
+        """Enhanced health check endpoint with metrics."""
         if not PROTO_AVAILABLE:
             context.set_code(grpc.StatusCode.INTERNAL)
             context.set_details("Proto files not generated.")
             return None
 
         from strix.tools.registry import get_tool_names
+        from .connection_pool import get_connection_pool
+        from .circuit_breaker import get_circuit_breaker
+
+        metrics = get_metrics()
+        server_stats = metrics.get_server_stats()
+        pool_stats = get_connection_pool().get_stats()
 
         health_response = tool_service_pb2.HealthResponse()
         health_response.healthy = True
@@ -183,13 +205,27 @@ class ToolServiceServicer:
         health_response.tool_count = len(get_tool_names())
 
         # Check network connectivity
+        network_status_str = "disconnected"
         try:
             import socket
 
             socket.gethostbyname("google.com")
-            health_response.network_status = "connected"
+            network_status_str = "connected"
         except Exception:
-            health_response.network_status = "disconnected"
+            network_status_str = "disconnected"
+
+        # Add metrics to network_status field (as JSON string)
+        health_data = {
+            "network": network_status_str,
+            "metrics": {
+                "uptime_seconds": server_stats["uptime_seconds"],
+                "request_rate": server_stats["request_rate_per_minute"],
+                "error_rate": server_stats["error_rate"],
+                "total_requests": server_stats["total_requests"],
+            },
+            "connection_pool": pool_stats,
+        }
+        health_response.network_status = json.dumps(health_data)
 
         return health_response
 

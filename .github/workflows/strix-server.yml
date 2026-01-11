@@ -315,6 +315,105 @@ jobs:
           echo "✓ Secrets updated successfully"
           echo "::endgroup::"
 
+      - name: Monitor Server Health
+        run: |
+          set -euo pipefail
+          echo "::group::Monitoring Server Health"
+          
+          SERVER_PID="${{ steps.server.outputs.server_pid }}"
+          TUNNEL_HOST="${{ steps.tunnel.outputs.tunnel_host }}"
+          SERVER_TIMEOUT_MINUTES="${{ env.SERVER_TIMEOUT }}"
+          SERVER_TIMEOUT_SECONDS=$((SERVER_TIMEOUT_MINUTES * 60))
+          
+          if [ -z "$SERVER_PID" ]; then
+            echo "::error::Server PID not available"
+            exit 1
+          fi
+          
+          # Health check interval (every 5 minutes)
+          HEALTH_CHECK_INTERVAL=300
+          ELAPSED=0
+          FAILED_CHECKS=0
+          MAX_FAILED_CHECKS=3
+          
+          while [ $ELAPSED -lt $SERVER_TIMEOUT_SECONDS ]; do
+            # Check if server process is still running
+            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+              echo "::error::Server process died (PID: $SERVER_PID)"
+              if [ -f /tmp/server.log ]; then
+                echo "Last 50 lines of server log:"
+                tail -50 /tmp/server.log || true
+              fi
+              exit 1
+            fi
+            
+            # Try to check server health via gRPC if tunnel is available
+            if [ -n "$TUNNEL_HOST" ] && [ $((ELAPSED % HEALTH_CHECK_INTERVAL)) -eq 0 ]; then
+              echo "Performing health check (elapsed: ${ELAPSED}s)..."
+              
+              # Try to connect via gRPC health check
+              python3 << 'PYEOF' || {
+                import grpc
+                import sys
+                try:
+                  from strix.runtime.remote_tool_server.proto import tool_service_pb2, tool_service_pb2_grpc
+                  
+                  server_url = "$TUNNEL_HOST:443"
+                  credentials = grpc.ssl_channel_credentials()
+                  channel = grpc.secure_channel(server_url, credentials)
+                  stub = tool_service_pb2_grpc.ToolServiceStub(channel)
+                  
+                  request = tool_service_pb2.HealthRequest()
+                  response = stub.HealthCheck(request, timeout=10)
+                  
+                  if response.healthy:
+                    print(f"✓ Server healthy: {response.tool_count} tools, {response.registered_agents} agents")
+                    sys.exit(0)
+                  else:
+                    print(f"✗ Server unhealthy")
+                    sys.exit(1)
+                except Exception as e:
+                  print(f"Health check failed: {e}")
+                  sys.exit(1)
+                finally:
+                  try:
+                    channel.close()
+                  except:
+                    pass
+              }
+              PYEOF
+              
+              if [ $? -ne 0 ]; then
+                FAILED_CHECKS=$((FAILED_CHECKS + 1))
+                echo "::warning::Health check failed (${FAILED_CHECKS}/${MAX_FAILED_CHECKS})"
+                
+                if [ $FAILED_CHECKS -ge $MAX_FAILED_CHECKS ]; then
+                  echo "::error::Server health checks failed ${MAX_FAILED_CHECKS} times. Server may be unhealthy."
+                  if [ -f /tmp/server.log ]; then
+                    echo "Recent server logs:"
+                    tail -100 /tmp/server.log || true
+                  fi
+                  # Don't exit - let it continue but log the issue
+                fi
+              else
+                FAILED_CHECKS=0  # Reset on success
+              fi
+            fi
+            
+            # Sleep for 30 seconds before next check
+            sleep 30
+            ELAPSED=$((ELAPSED + 30))
+            
+            # Log progress every 5 minutes
+            if [ $((ELAPSED % 300)) -eq 0 ]; then
+              MINUTES=$((ELAPSED / 60))
+              echo "Server running for ${MINUTES} minutes (${ELAPSED}/${SERVER_TIMEOUT_SECONDS}s)"
+            fi
+          done
+          
+          echo "Server timeout reached (${SERVER_TIMEOUT_MINUTES} minutes)"
+          echo "::endgroup::"
+
       - name: Wait for Server Timeout
         timeout-minutes: ${{ fromJson(github.event.inputs.server_timeout || '120') }}
         run: |
