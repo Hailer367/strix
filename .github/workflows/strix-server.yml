@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      secrets: write  # Needed to update CRED_TUNNEL secret
+      # Note: Secret updates are done via API with SERVER_TOKEN, not workflow permissions
 
     steps:
       - name: Checkout Repository
