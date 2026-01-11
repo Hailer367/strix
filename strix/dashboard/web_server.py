@@ -8,20 +8,24 @@ The dashboard is INFORMATION ONLY - it does NOT control the agent in any way.
 """
 
 import asyncio
+import csv
+import io
 import json
 import logging
+import mimetypes
 import os
 import threading
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
 from .dashboard import Dashboard, AgentStatus, ResourceUsage, VulnerabilityEntry
+from .history import get_historical_tracker
 from .time_tracker import TimeTracker
-
 
 logger = logging.getLogger(__name__)
 
@@ -185,14 +189,34 @@ def add_tool_execution(tool_data: dict[str, Any]) -> None:
         if len(_web_dashboard_state["tool_executions"]) > 200:
             _web_dashboard_state["tool_executions"] = _web_dashboard_state["tool_executions"][-200:]
         
-        # Also add to live feed
-        add_live_feed_entry({
+        # Also add to live feed with enhanced information
+        status = tool_data.get("status", "running")
+        duration = tool_data.get("duration_seconds")
+        error_msg = tool_data.get("error_message")
+        
+        # Format duration for display
+        duration_str = ""
+        if duration is not None:
+            if duration < 1:
+                duration_str = f" ({duration*1000:.0f}ms)"
+            else:
+                duration_str = f" ({duration:.2f}s)"
+        
+        # Create feed entry
+        feed_entry = {
             "type": "tool_execution",
             "tool_name": tool_data.get("tool_name", "unknown"),
-            "status": tool_data.get("status", "running"),
+            "status": status,
             "agent_id": tool_data.get("agent_id"),
             "args_summary": _summarize_args(tool_data.get("args", {})),
-        })
+            "duration": duration_str,
+        }
+        
+        # Add error information if failed
+        if status == "failed" and error_msg:
+            feed_entry["error"] = error_msg[:100] + ("..." if len(error_msg) > 100 else "")
+        
+        add_live_feed_entry(feed_entry)
 
 
 def add_chat_message(message: dict[str, Any]) -> None:
@@ -243,21 +267,24 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
         """Handle GET requests."""
         parsed_path = urlparse(self.path)
         path = parsed_path.path
+        query_params = parse_qs(parsed_path.query)
         
-        if path == "/" or path == "/index.html":
-            self._serve_dashboard_html()
-        elif path == "/api/state":
+        # API endpoints
+        if path == "/api/state":
             self._serve_state_json()
         elif path == "/api/stream":
             self._serve_sse_stream()
         elif path == "/api/live-feed":
             self._serve_live_feed()
-        elif path == "/static/styles.css":
-            self._serve_css()
-        elif path == "/static/app.js":
-            self._serve_js()
+        elif path.startswith("/api/history"):
+            self._serve_history(query_params)
+        elif path.startswith("/api/export"):
+            self._serve_export(query_params)
         elif path == "/health":
             self._serve_health()
+        # Static file serving (Next.js build output)
+        elif path == "/" or path == "/index.html" or not path.startswith("/api"):
+            self._serve_static_file(path)
         else:
             self._send_404()
     
@@ -322,23 +349,116 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             logger.debug("SSE client disconnected")
     
-    def _serve_dashboard_html(self) -> None:
-        """Serve the main dashboard HTML page."""
-        self._send_response_headers("text/html")
-        html = get_dashboard_html()
-        self.wfile.write(html.encode())
+    def _serve_static_file(self, path: str) -> None:
+        """Serve static files from Next.js build output."""
+        # Get the frontend build directory
+        dashboard_dir = Path(__file__).parent
+        frontend_out = dashboard_dir / "frontend" / "out"
+        
+        # Normalize path
+        if path == "/" or path == "/index.html":
+            file_path = frontend_out / "index.html"
+        else:
+            # Remove leading slash and resolve
+            file_path = frontend_out / path.lstrip("/")
+            # Security: prevent path traversal
+            try:
+                file_path.resolve().relative_to(frontend_out.resolve())
+            except ValueError:
+                self._send_404()
+                return
+        
+        if not file_path.exists() or not file_path.is_file():
+            # For client-side routing, serve index.html
+            if frontend_out.exists():
+                file_path = frontend_out / "index.html"
+            else:
+                # Fallback to old dashboard HTML if Next.js build doesn't exist
+                self._serve_dashboard_html_fallback()
+                return
+        
+        # Determine MIME type
+        mime_type, _ = mimetypes.guess_type(str(file_path))
+        if mime_type is None:
+            if file_path.suffix == ".js":
+                mime_type = "application/javascript"
+            elif file_path.suffix == ".css":
+                mime_type = "text/css"
+            elif file_path.suffix == ".json":
+                mime_type = "application/json"
+            elif file_path.suffix == ".html":
+                mime_type = "text/html"
+            else:
+                mime_type = "application/octet-stream"
+        
+        self._send_response_headers(mime_type)
+        try:
+            with file_path.open("rb") as f:
+                self.wfile.write(f.read())
+        except Exception as e:
+            logger.error(f"Error serving static file {path}: {e}")
+            self._send_404()
     
-    def _serve_css(self) -> None:
-        """Serve the dashboard CSS."""
-        self._send_response_headers("text/css")
-        css = get_dashboard_css()
-        self.wfile.write(css.encode())
+    def _serve_dashboard_html_fallback(self) -> None:
+        """Fallback to old dashboard HTML if Next.js build doesn't exist."""
+        try:
+            from .dashboard_html import get_dashboard_html
+            self._send_response_headers("text/html")
+            html = get_dashboard_html()
+            self.wfile.write(html.encode())
+        except ImportError:
+            self._send_404()
     
-    def _serve_js(self) -> None:
-        """Serve the dashboard JavaScript."""
-        self._send_response_headers("application/javascript")
-        js = get_dashboard_js()
-        self.wfile.write(js.encode())
+    def _serve_history(self, query_params: dict[str, list[str]]) -> None:
+        """Serve historical data endpoint."""
+        try:
+            metric = query_params.get("metric", ["tokens"])[0]
+            window = int(query_params.get("window", ["3600"])[0])
+            
+            tracker = get_historical_tracker()
+            data = tracker.get_metrics(metric_name=metric, window_seconds=window)
+            
+            self._send_response_headers("application/json")
+            self.wfile.write(json.dumps(data, default=str).encode())
+        except Exception as e:
+            logger.error(f"Error serving history: {e}")
+            self._send_response_headers("application/json", 500)
+            self.wfile.write(json.dumps({"error": str(e)}).encode())
+    
+    def _serve_export(self, query_params: dict[str, list[str]]) -> None:
+        """Serve export endpoint for JSON/CSV export."""
+        try:
+            export_format = query_params.get("format", ["json"])[0]
+            state = get_dashboard_state()
+            
+            if export_format == "json":
+                self._send_response_headers("application/json")
+                self.wfile.write(json.dumps(state, default=str, indent=2).encode())
+            elif export_format == "csv":
+                # Export vulnerabilities as CSV
+                self._send_response_headers("text/csv")
+                output = io.StringIO()
+                writer = csv.DictWriter(
+                    output,
+                    fieldnames=["id", "title", "severity", "timestamp", "target"],
+                )
+                writer.writeheader()
+                for vuln in state.get("vulnerabilities", []):
+                    writer.writerow({
+                        "id": vuln.get("id", ""),
+                        "title": vuln.get("title", ""),
+                        "severity": vuln.get("severity", ""),
+                        "timestamp": vuln.get("timestamp", ""),
+                        "target": vuln.get("target", ""),
+                    })
+                self.wfile.write(output.getvalue().encode())
+            else:
+                self._send_response_headers("application/json", 400)
+                self.wfile.write(json.dumps({"error": "Invalid format"}).encode())
+        except Exception as e:
+            logger.error(f"Error serving export: {e}")
+            self._send_response_headers("application/json", 500)
+            self.wfile.write(json.dumps({"error": str(e)}).encode())
     
     def _send_404(self) -> None:
         """Send a 404 response."""

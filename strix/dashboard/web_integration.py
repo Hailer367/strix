@@ -11,6 +11,7 @@ import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from .history import get_historical_tracker
 from .web_server import (
     WebDashboardServer,
     add_chat_message,
@@ -151,11 +152,12 @@ class WebDashboardIntegration:
             time.sleep(1.0)
     
     def _sync_from_tracer(self) -> None:
-        """Sync state from the tracer."""
+        """Sync state from the tracer and update history."""
         if not self.tracer:
             return
         
         updates: dict[str, Any] = {}
+        tracker = get_historical_tracker()
         
         # Sync scan config
         if self.tracer.scan_config:
@@ -199,6 +201,13 @@ class WebDashboardIntegration:
             new_tools = list(self.tracer.tool_executions.values())[self._last_tool_count:]
             for tool_data in new_tools:
                 add_tool_execution(tool_data)
+                # Track tool execution events in history
+                tracker.add_event("tool_execution", {
+                    "tool_name": tool_data.get("tool_name"),
+                    "agent_id": tool_data.get("agent_id"),
+                    "status": tool_data.get("status"),
+                    "execution_id": tool_data.get("execution_id"),
+                })
             self._last_tool_count = current_tool_count
         
         # Sync new chat messages to live feed  
@@ -219,7 +228,25 @@ class WebDashboardIntegration:
         try:
             llm_stats = self.tracer.get_total_llm_stats()
             if llm_stats and "total" in llm_stats:
-                updates["resources"] = llm_stats["total"]
+                resources = llm_stats["total"]
+                updates["resources"] = resources
+                
+                # Track metrics in history
+                tracker.add_data_point({
+                    "tokens": {
+                        "input": resources.get("input_tokens", 0),
+                        "output": resources.get("output_tokens", 0),
+                        "cached": resources.get("cached_tokens", 0),
+                    },
+                    "cost": resources.get("cost", 0.0),
+                    "requests": resources.get("requests", 0),
+                    "rate": len(self.tracer.tool_executions),
+                })
+                
+                # Track agent count
+                tracker.add_event("agent_count", {
+                    "count": len(self.tracer.agents),
+                })
         except Exception:
             pass
         

@@ -724,28 +724,66 @@ def get_dashboard_html() -> str:
                         No tool executions yet...
                     </div>
                 ) : (
-                    tools.slice(-50).reverse().map((tool, idx) => (
-                        <div key={idx} className="flex items-center justify-between p-2 rounded bg-white/5 hover:bg-white/10">
-                            <div className="flex items-center gap-2">
-                                <Icon name="Wrench" size={12} className="text-blue-400" />
-                                <span className="text-sm text-blue-400 font-medium">
-                                    {tool.tool_name}
-                                </span>
-                                {tool.agent_id && (
-                                    <span className="text-xs text-gray-600">
-                                        by {tool.agent_id.slice(0, 8)}
-                                    </span>
+                    tools.slice(-50).reverse().map((tool, idx) => {
+                        const duration = tool.duration_seconds;
+                        const durationStr = duration !== null && duration !== undefined
+                            ? (duration < 1 ? `${(duration * 1000).toFixed(0)}ms` : `${duration.toFixed(2)}s`)
+                            : '';
+                        
+                        const hasError = tool.status === 'failed' && tool.error_message;
+                        
+                        return (
+                            <div key={idx} className="rounded bg-white/5 hover:bg-white/10">
+                                <div className="flex items-center justify-between p-2">
+                                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                                        <Icon name="Wrench" size={12} className="text-blue-400 flex-shrink-0" />
+                                        <span className="text-sm text-blue-400 font-medium truncate">
+                                            {tool.tool_name}
+                                        </span>
+                                        {durationStr && (
+                                            <span className="text-xs text-gray-600">
+                                                {durationStr}
+                                            </span>
+                                        )}
+                                        {tool.agent_id && (
+                                            <span className="text-xs text-gray-600 truncate">
+                                                by {tool.agent_id.slice(0, 8)}
+                                            </span>
+                                        )}
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <span className={
+                                            tool.status === 'completed' ? 'text-green-400' :
+                                            tool.status === 'failed' ? 'text-red-400' : 'text-yellow-400'
+                                        }>
+                                            {tool.status === 'completed' ? '✓' : 
+                                             tool.status === 'failed' ? '✗' : '●'}
+                                        </span>
+                                    </div>
+                                </div>
+                                {hasError && (
+                                    <div className="px-2 pb-2">
+                                        <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded p-2">
+                                            <div className="font-semibold mb-1">Error:</div>
+                                            <div className="font-mono text-red-300">
+                                                {tool.error_message}
+                                            </div>
+                                            {tool.error_traceback && (
+                                                <details className="mt-2">
+                                                    <summary className="cursor-pointer text-red-300 hover:text-red-200">
+                                                        Show traceback
+                                                    </summary>
+                                                    <pre className="mt-1 text-xs overflow-x-auto">
+                                                        {tool.error_traceback}
+                                                    </pre>
+                                                </details>
+                                            )}
+                                        </div>
+                                    </div>
                                 )}
                             </div>
-                            <span className={
-                                tool.status === 'completed' ? 'text-green-400' :
-                                tool.status === 'failed' ? 'text-red-400' : 'text-yellow-400'
-                            }>
-                                {tool.status === 'completed' ? '✓' : 
-                                 tool.status === 'failed' ? '✗' : '●'}
-                            </span>
-                        </div>
-                    ))
+                        );
+                    })
                 )}
             </div>
         );

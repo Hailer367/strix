@@ -155,16 +155,25 @@ class Tracer:
         self._next_execution_id += 1
 
         now = datetime.now(UTC).isoformat()
+        
+        # Create preview of args for debugging (truncate large values)
+        args_preview = self._create_data_preview(args)
+        
         execution_data = {
             "execution_id": execution_id,
             "agent_id": agent_id,
             "tool_name": tool_name,
             "args": args,
+            "args_preview": args_preview,
             "status": "running",
             "result": None,
+            "result_preview": None,
+            "error_message": None,
+            "error_traceback": None,
             "timestamp": now,
             "started_at": now,
             "completed_at": None,
+            "duration_seconds": None,
         }
 
         self.tool_executions[execution_id] = execution_data
@@ -175,12 +184,45 @@ class Tracer:
         return execution_id
 
     def update_tool_execution(
-        self, execution_id: int, status: str, result: Any | None = None
+        self, 
+        execution_id: int, 
+        status: str, 
+        result: Any | None = None,
+        error_message: str | None = None,
+        error_traceback: str | None = None,
     ) -> None:
+        """Update tool execution with result or error information.
+        
+        Args:
+            execution_id: The execution ID to update
+            status: Status ("completed", "failed", etc.)
+            result: The result data (for successful executions)
+            error_message: Error message (for failed executions)
+            error_traceback: Full error traceback (for failed executions)
+        """
         if execution_id in self.tool_executions:
-            self.tool_executions[execution_id]["status"] = status
-            self.tool_executions[execution_id]["result"] = result
-            self.tool_executions[execution_id]["completed_at"] = datetime.now(UTC).isoformat()
+            exec_data = self.tool_executions[execution_id]
+            exec_data["status"] = status
+            exec_data["result"] = result
+            exec_data["completed_at"] = datetime.now(UTC).isoformat()
+            
+            # Calculate duration
+            if exec_data.get("started_at"):
+                try:
+                    start = datetime.fromisoformat(exec_data["started_at"].replace("Z", "+00:00"))
+                    end = datetime.fromisoformat(exec_data["completed_at"].replace("Z", "+00:00"))
+                    exec_data["duration_seconds"] = (end - start).total_seconds()
+                except (ValueError, TypeError):
+                    exec_data["duration_seconds"] = None
+            
+            # Add result preview for debugging
+            if result is not None:
+                exec_data["result_preview"] = self._create_data_preview(result)
+            
+            # Add error information for failed executions
+            if status == "failed" or error_message:
+                exec_data["error_message"] = error_message
+                exec_data["error_traceback"] = error_traceback
 
     def update_agent_status(
         self, agent_id: str, status: str, error_message: str | None = None
@@ -333,5 +375,41 @@ class Tracer:
             "total_tokens": total_stats["input_tokens"] + total_stats["output_tokens"],
         }
 
+    def _create_data_preview(self, data: Any, max_length: int = 200) -> str:
+        """Create a truncated preview of data for debugging display.
+        
+        Args:
+            data: The data to preview
+            max_length: Maximum length of the preview string
+            
+        Returns:
+            A truncated string representation of the data
+        """
+        try:
+            if data is None:
+                return "None"
+            
+            # Convert to string
+            if isinstance(data, (str, int, float, bool)):
+                data_str = str(data)
+            elif isinstance(data, dict):
+                # Show first few keys
+                keys = list(data.keys())[:3]
+                if len(data) > 3:
+                    data_str = f"{{...{len(data)} keys: {', '.join(str(k) for k in keys)}...}}"
+                else:
+                    data_str = str(data)
+            elif isinstance(data, (list, tuple)):
+                data_str = f"[...{len(data)} items]"
+            else:
+                data_str = str(type(data).__name__)
+            
+            # Truncate if too long
+            if len(data_str) > max_length:
+                return data_str[:max_length - 3] + "..."
+            return data_str
+        except Exception:
+            return "<preview unavailable>"
+    
     def cleanup(self) -> None:
         self.save_run_data(mark_complete=True)

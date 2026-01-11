@@ -34,6 +34,9 @@ class AgentState(BaseModel):
     time_warning_minutes: float = 5.0  # Minutes before end to warn
     time_warning_sent: bool = False
     time_critical_warning_sent: bool = False
+    time_final_warning_sent: bool = False  # 1 minute warning
+    time_expired_warning_sent: bool = False  # When time actually expires
+    last_time_reminder_iteration: int = 0  # Track iterations for periodic reminders
 
     messages: list[dict[str, Any]] = Field(default_factory=list)
     context: dict[str, Any] = Field(default_factory=dict)
@@ -124,6 +127,9 @@ class AgentState(BaseModel):
         self.time_warning_minutes = warning_minutes
         self.time_warning_sent = False
         self.time_critical_warning_sent = False
+        self.time_final_warning_sent = False
+        self.time_expired_warning_sent = False
+        self.last_time_reminder_iteration = 0
         self.last_updated = datetime.now(UTC).isoformat()
     
     def get_elapsed_session_minutes(self) -> float:
@@ -155,31 +161,70 @@ class AgentState(BaseModel):
         """Get a time warning message if appropriate.
         
         Returns None if no warning is needed.
+        This method provides multiple warning levels:
+        1. Standard warning at warning_minutes threshold
+        2. Critical warning at half of warning_minutes
+        3. Final warning at 1 minute remaining
+        4. Expired warning when time is up
+        5. Periodic reminders every 5 iterations after warning threshold
         """
         if self.session_start_time is None:
             return None
         
         remaining = self.get_remaining_session_minutes()
+        elapsed = self.get_elapsed_session_minutes()
         
-        # Critical warning
+        # Time expired - highest priority
+        if remaining <= 0 and not self.time_expired_warning_sent:
+            self.time_expired_warning_sent = True
+            return (
+                f"🚨 TIME EXPIRED: Your allocated session time of {self.session_duration_minutes:.0f} minutes "
+                f"has been COMPLETELY EXHAUSTED (elapsed: {elapsed:.1f} minutes). "
+                f"You MUST call the finish_scan tool IMMEDIATELY with your findings. "
+                f"The session will be forcefully terminated. DO NOT make any other tool calls."
+            )
+        
+        # Final warning at 1 minute
+        if remaining <= 1.0 and not self.time_final_warning_sent:
+            self.time_final_warning_sent = True
+            return (
+                f"🔴 FINAL TIME WARNING: Less than 1 minute remaining ({remaining:.1f} minutes)! "
+                f"This is your FINAL warning. You MUST call finish_scan NOW. "
+                f"Your session will be forcefully terminated when time expires. "
+                f"Stop all other activities and finish immediately."
+            )
+        
+        # Critical warning at half of warning threshold
         if self.is_time_critical_threshold() and not self.time_critical_warning_sent:
             self.time_critical_warning_sent = True
             return (
                 f"⚠️ CRITICAL TIME WARNING: Only {remaining:.1f} minutes remaining! "
                 f"You MUST finish your current task immediately. "
-                f"Call the appropriate finish tool NOW - do NOT start any new tasks. "
-                f"Document any findings quickly and wrap up."
+                f"Call the finish_scan tool NOW - do NOT start any new tasks. "
+                f"Document any findings quickly and wrap up. Time is almost up!"
             )
         
-        # Standard warning
+        # Standard warning at warning threshold
         if self.is_time_warning_threshold() and not self.time_warning_sent:
             self.time_warning_sent = True
             return (
                 f"⏰ TIME WARNING: Approximately {remaining:.1f} minutes remaining in this session. "
-                f"Start wrapping up your current investigations. "
-                f"Focus on documenting your findings and preparing to finish. "
+                f"You have {self.session_duration_minutes:.0f} minutes total and have used {elapsed:.1f} minutes. "
+                f"Start wrapping up your current investigations NOW. "
+                f"Focus on documenting your findings and preparing to call finish_scan. "
                 f"Do NOT start any new long-running scans or investigations."
             )
+        
+        # Periodic reminder every 5 iterations after warning threshold (but only if time is running low)
+        if self.is_time_warning_threshold() and remaining > 0:
+            iterations_since_last_reminder = self.iteration - self.last_time_reminder_iteration
+            if iterations_since_last_reminder >= 5:
+                self.last_time_reminder_iteration = self.iteration
+                return (
+                    f"⏱️ TIME REMINDER: {remaining:.1f} minutes remaining. "
+                    f"Progress: {elapsed:.1f}/{self.session_duration_minutes:.0f} minutes used. "
+                    f"You should be finishing up. Call finish_scan soon."
+                )
         
         return None
 
