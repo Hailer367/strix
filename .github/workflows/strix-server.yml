@@ -70,8 +70,7 @@ jobs:
           echo "::group::Generating gRPC code from proto files"
           cd "$GITHUB_WORKSPACE"
           
-          # First, generate proto files before installing the package
-          # Use PYTHONPATH to find the strix module
+          # Use PYTHONPATH to find the strix module (NO pip install -e .)
           export PYTHONPATH="$GITHUB_WORKSPACE:${PYTHONPATH:-}"
           
           # Generate proto files using the script directly
@@ -83,12 +82,18 @@ jobs:
           echo "Generated gRPC code"
           ls -la strix/runtime/remote_tool_server/proto/ || true
           
-          # Now install the package in development mode (proto files now exist)
-          pip install -e . 2>/dev/null || true
-          
-          # Verify proto files are importable
-          python -c "from strix.runtime.remote_tool_server.proto import tool_service_pb2; print('Proto import successful')" || {
-            echo "::error::Proto files generated but not importable"
+          # Verify proto files are importable and PROTO_AVAILABLE is True
+          python -c "
+          from strix.runtime.remote_tool_server.proto import tool_service_pb2
+          print('Proto import successful')
+          from strix.runtime.remote_tool_server import server
+          print(f'PROTO_AVAILABLE = {server.PROTO_AVAILABLE}')
+          if not server.PROTO_AVAILABLE:
+              print('ERROR: PROTO_AVAILABLE is False!')
+              import sys
+              sys.exit(1)
+          " || {
+            echo "::error::Proto files generated but not importable or PROTO_AVAILABLE is False"
             exit 1
           }
           
@@ -132,7 +137,7 @@ jobs:
           }
           
           # Start server in background with all environment variables
-          # Run the server script directly to ensure proper PYTHONPATH usage
+          # Use module execution with explicit PYTHONPATH
           cd "$GITHUB_WORKSPACE"
           nohup env \
             PYTHONPATH="$GITHUB_WORKSPACE:${PYTHONPATH:-}" \
@@ -140,7 +145,7 @@ jobs:
             STRIX_SERVER_TOKEN="$STRIX_SERVER_TOKEN" \
             STRIXDB_TOKEN="$STRIXDB_TOKEN" \
             STRIX_TOOL_POOL_SIZE="$STRIX_TOOL_POOL_SIZE" \
-            python "$GITHUB_WORKSPACE/strix/runtime/remote_tool_server/server.py" > /tmp/server.log 2>&1 &
+            python -m strix.runtime.remote_tool_server.server > /tmp/server.log 2>&1 &
           SERVER_PID=$!
           echo "$SERVER_PID" > /tmp/server.pid
           
