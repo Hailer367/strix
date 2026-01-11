@@ -17,7 +17,7 @@ concurrency:
 
 env:
   SERVER_PORT: '50051'
-  SERVER_TIMEOUT: '120'
+  SERVER_TIMEOUT: 120
 
 jobs:
   start-server:
@@ -316,7 +316,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Wait for Server Timeout
-        timeout-minutes: ${{ github.event.inputs.server_timeout || env.SERVER_TIMEOUT }}
+        timeout-minutes: ${{ fromJson(github.event.inputs.server_timeout || '120') }}
         run: |
           set -euo pipefail
           echo "::group::Server Running (waiting for timeout or manual stop)"
