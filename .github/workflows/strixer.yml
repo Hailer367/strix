@@ -426,60 +426,32 @@ jobs:
           fi
           
           # Ensure critical dependencies are installed (in case of partial installation)
+          # NOTE: gRPC dependencies (grpcio, grpcio-tools) are NO LONGER NEEDED
+          # We now use HTTP-based communication which works better with cloudflared tunnels
           echo "Verifying critical dependencies..."
-          pip install jinja2 httpx tenacity requests pydantic rich docker textual xmltodict grpcio grpcio-tools
+          pip install jinja2 httpx tenacity requests pydantic rich docker textual xmltodict
           
           # Set environment variable for direct API mode
           echo "STRIX_DIRECT_API_MODE=true" >> "$GITHUB_ENV"
           
           # Set up remote runtime if CRED_TUNNEL is available
           if [ -n "${{ secrets.CRED_TUNNEL }}" ]; then
-            echo "Remote tool server detected - using remote runtime"
+            echo "Remote HTTP tool server detected - using remote runtime"
             echo "STRIX_RUNTIME_BACKEND=remote" >> "$GITHUB_ENV"
             echo "CRED_TUNNEL=${{ secrets.CRED_TUNNEL }}" >> "$GITHUB_ENV"
             echo "STRIX_SERVER_TOKEN=${{ secrets.STRIX_SERVER_TOKEN }}" >> "$GITHUB_ENV"
+            
+            # Test HTTP connectivity to remote server
+            echo "Testing HTTP connectivity to remote server..."
+            HEALTH_RESPONSE=$(curl -s --max-time 10 "${{ secrets.CRED_TUNNEL }}/health" 2>/dev/null || echo '{"error":"connection failed"}')
+            if echo "$HEALTH_RESPONSE" | grep -q '"healthy":true'; then
+              echo "✓ Remote HTTP server is healthy and reachable!"
+            else
+              echo "::warning::Remote server health check failed: $HEALTH_RESPONSE"
+              echo "This may be expected if the server workflow hasn't started yet."
+            fi
           else
             echo "No remote server - using Docker runtime"
-          fi
-          
-          # Generate gRPC proto files in /tmp/strix
-          echo "Generating gRPC proto files in /tmp/strix..."
-          python -m strix.runtime.remote_tool_server.generate_proto 2>/dev/null || echo "Proto generation skipped (may already exist)"
-          
-          # CRITICAL: Also generate proto files in GITHUB_WORKSPACE for runtime imports
-          # The scan runs from GITHUB_WORKSPACE, not /tmp/strix, so proto files must exist there
-          echo "Generating gRPC proto files in GITHUB_WORKSPACE..."
-          cd "$GITHUB_WORKSPACE"
-          python -m strix.runtime.remote_tool_server.generate_proto || {
-            echo "::warning::Proto generation in GITHUB_WORKSPACE failed, copying from /tmp/strix..."
-            # Fallback: copy generated files from /tmp/strix to GITHUB_WORKSPACE
-            cp -f /tmp/strix/strix/runtime/remote_tool_server/proto/tool_service_pb2.py \
-              "$GITHUB_WORKSPACE/strix/runtime/remote_tool_server/proto/" 2>/dev/null || true
-            cp -f /tmp/strix/strix/runtime/remote_tool_server/proto/tool_service_pb2_grpc.py \
-              "$GITHUB_WORKSPACE/strix/runtime/remote_tool_server/proto/" 2>/dev/null || true
-          }
-          
-          # CRITICAL: Fix imports in generated files
-          # gRPC tools generates absolute imports that don't work with package structure
-          # We need to convert 'import tool_service_pb2' to 'from . import tool_service_pb2'
-          PROTO_DIR="$GITHUB_WORKSPACE/strix/runtime/remote_tool_server/proto"
-          if [ -f "$PROTO_DIR/tool_service_pb2_grpc.py" ]; then
-            sed -i 's/^import tool_service_pb2 as/from . import tool_service_pb2 as/' "$PROTO_DIR/tool_service_pb2_grpc.py"
-            echo "✓ Fixed imports in tool_service_pb2_grpc.py"
-          fi
-          
-          # Also fix in /tmp/strix if needed
-          TMP_PROTO_DIR="/tmp/strix/strix/runtime/remote_tool_server/proto"
-          if [ -f "$TMP_PROTO_DIR/tool_service_pb2_grpc.py" ]; then
-            sed -i 's/^import tool_service_pb2 as/from . import tool_service_pb2 as/' "$TMP_PROTO_DIR/tool_service_pb2_grpc.py"
-            echo "✓ Fixed imports in /tmp/strix proto files"
-          fi
-          
-          # Verify proto files exist in GITHUB_WORKSPACE
-          if [ -f "$GITHUB_WORKSPACE/strix/runtime/remote_tool_server/proto/tool_service_pb2.py" ]; then
-            echo "✓ Proto files verified in GITHUB_WORKSPACE"
-          else
-            echo "::warning::Proto files not found in GITHUB_WORKSPACE - remote runtime may not work"
           fi
           
           # Return to /tmp/strix for verification

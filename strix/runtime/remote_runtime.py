@@ -1,10 +1,12 @@
-"""Remote runtime for connecting to gRPC tool server."""
+"""Remote runtime for connecting to HTTP tool server (Cloudflared-compatible).
+
+This replaces the gRPC-based remote runtime with HTTP-based communication
+that works properly with Cloudflared tunnels.
+"""
 
 import logging
 import os
 from typing import Any
-
-import grpc
 
 from .runtime import AbstractRuntime, SandboxInfo
 
@@ -12,30 +14,33 @@ logger = logging.getLogger(__name__)
 
 
 class RemoteRuntime(AbstractRuntime):
-    """Runtime that connects to a remote gRPC tool server."""
+    """Runtime that connects to a remote HTTP tool server."""
 
     def __init__(self) -> None:
         """Initialize remote runtime."""
         self.server_url = self._get_server_url()
         self.auth_token = self._get_auth_token()
-        self._channel: grpc.Channel | None = None
-        self._stub: Any = None
+        self._client: Any = None
 
     def _get_server_url(self) -> str:
         """Get server URL from CRED_TUNNEL secret or environment."""
         # First try CRED_TUNNEL secret (for GitHub Actions)
         cred_tunnel = os.getenv("CRED_TUNNEL", "")
         if cred_tunnel:
-            # Remove protocol if present, gRPC uses host:port format
-            cred_tunnel = cred_tunnel.replace("https://", "").replace("http://", "")
-            # Extract host:port (cloudflared gives us a domain)
-            # For gRPC, we need to use the domain directly
-            return cred_tunnel
+            # Remove protocol prefix and port suffix if present
+            url = cred_tunnel.replace("https://", "").replace("http://", "")
+            # Remove :443 suffix if present (cloudflared default)
+            if url.endswith(":443"):
+                url = url[:-4]
+            # Return as https URL for cloudflared
+            return f"https://{url}"
 
         # Fallback to environment variable
         server_url = os.getenv("STRIX_SERVER_URL", "")
         if server_url:
-            return server_url.replace("https://", "").replace("http://", "")
+            if not server_url.startswith("http://") and not server_url.startswith("https://"):
+                server_url = f"https://{server_url}"
+            return server_url
 
         raise ValueError(
             "Remote server URL not found. Set CRED_TUNNEL or STRIX_SERVER_URL environment variable."
@@ -48,40 +53,13 @@ class RemoteRuntime(AbstractRuntime):
             raise ValueError("STRIX_SERVER_TOKEN not set. Cannot authenticate with remote server.")
         return token
 
-    def _get_channel(self) -> grpc.Channel:
-        """Get or create gRPC channel."""
-        if self._channel is None:
-            # For cloudflared tunnels, we need to use TLS
-            # Extract host and port from URL
-            if ":" in self.server_url:
-                host, port = self.server_url.split(":", 1)
-                port = int(port)
-            else:
-                host = self.server_url
-                port = 443  # Default HTTPS port for cloudflared
-
-            # Create secure channel for cloudflared (TLS required)
-            credentials = grpc.ssl_channel_credentials()
-            self._channel = grpc.secure_channel(f"{host}:{port}", credentials)
-
-            logger.info(f"Connected to remote tool server at {host}:{port}")
-
-        return self._channel
-
-    def _get_stub(self) -> Any:
-        """Get or create gRPC stub."""
-        if self._stub is None:
-            try:
-                from strix.runtime.remote_tool_server.proto import tool_service_pb2_grpc
-
-                channel = self._get_channel()
-                self._stub = tool_service_pb2_grpc.ToolServiceStub(channel)
-            except ImportError:
-                raise RuntimeError(
-                    "Proto files not generated. Server workflow must generate them first."
-                )
-
-        return self._stub
+    def _get_client(self) -> Any:
+        """Get or create HTTP client."""
+        if self._client is None:
+            from strix.runtime.remote_tool_server.http_client import HttpToolClient
+            self._client = HttpToolClient(self.server_url, self.auth_token)
+            logger.info(f"Connected to remote HTTP tool server at {self.server_url}")
+        return self._client
 
     async def create_sandbox(
         self,
@@ -94,24 +72,22 @@ class RemoteRuntime(AbstractRuntime):
         For remote runtime, this just registers the agent with the server.
         """
         try:
-            from strix.runtime.remote_tool_server.proto import tool_service_pb2
-
-            stub = self._get_stub()
+            client = self._get_client()
+            
             # Register agent with server
-            request = tool_service_pb2.RegisterAgentRequest(
-                agent_id=agent_id,
-                auth_token=self.auth_token,
-            )
-            response = stub.RegisterAgent(request, timeout=10)
-            if not response.success:
-                raise RuntimeError(f"Failed to register agent: {response.message}")
+            response = client.register_agent(agent_id)
+            
+            if not response.get("success", False):
+                raise RuntimeError(f"Failed to register agent: {response.get('error', 'Unknown error')}")
 
-            # Return sandbox info (remote server doesn't need container_id)
+            logger.info(f"Agent {agent_id} registered with remote server")
+
+            # Return sandbox info
             return {
                 "workspace_id": f"remote-{agent_id}",
                 "api_url": self.server_url,
                 "auth_token": existing_token or self.auth_token,
-                "tool_server_port": 0,  # Not used for remote
+                "tool_server_port": 0,  # Not used for remote HTTP
                 "agent_id": agent_id,
             }
 
@@ -121,12 +97,11 @@ class RemoteRuntime(AbstractRuntime):
 
     async def get_sandbox_url(self, container_id: str, port: int) -> str:
         """Get sandbox URL (for remote, this is the server URL)."""
-        return f"grpc://{self.server_url}"
+        return self.server_url
 
     async def destroy_sandbox(self, container_id: str) -> None:
         """Destroy sandbox (for remote, just cleanup connection)."""
-        if self._channel:
-            self._channel.close()
-            self._channel = None
-            self._stub = None
-            logger.info("Closed connection to remote tool server")
+        if self._client:
+            self._client.close()
+            self._client = None
+            logger.info("Closed connection to remote HTTP tool server")

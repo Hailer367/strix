@@ -53,10 +53,10 @@ async def _execute_tool_in_sandbox(tool_name: str, agent_state: Any, **kwargs: A
     runtime = get_runtime()
     api_url = agent_state.sandbox_info["api_url"]
     
-    # Check if this is a remote gRPC server or local HTTP server
-    if api_url.startswith("grpc://") or "trycloudflare.com" in api_url:
-        # Use gRPC for remote server
-        return await _execute_tool_via_grpc(tool_name, agent_state, **kwargs)
+    # Check if this is a remote HTTP server (via cloudflared) or local HTTP server
+    if "trycloudflare.com" in api_url or api_url.startswith("https://"):
+        # Use HTTP for remote cloudflared server
+        return await _execute_tool_via_http(tool_name, agent_state, **kwargs)
     
     # Fallback to HTTP for local Docker server
     tool_server_port = agent_state.sandbox_info.get("tool_server_port", 0)
@@ -130,14 +130,12 @@ async def _execute_tool_in_sandbox(tool_name: str, agent_state: Any, **kwargs: A
             ) from e
 
 
-async def _execute_tool_via_grpc(tool_name: str, agent_state: Any, **kwargs: Any) -> Any:
-    """Execute tool via gRPC remote server with agent-configurable timeout."""
+async def _execute_tool_via_http(tool_name: str, agent_state: Any, **kwargs: Any) -> Any:
+    """Execute tool via HTTP remote server (cloudflared-compatible) with agent-configurable timeout."""
     try:
-        from strix.runtime.remote_tool_server.grpc_client import GrpcToolClient
+        from strix.runtime.remote_tool_server.http_client import HttpToolClient
 
         api_url = agent_state.sandbox_info["api_url"]
-        # Remove grpc:// prefix if present
-        server_url = api_url.replace("grpc://", "").replace("https://", "").replace("http://", "")
         auth_token = agent_state.sandbox_token
         agent_id = getattr(agent_state, "agent_id", "unknown")
 
@@ -149,20 +147,15 @@ async def _execute_tool_via_grpc(tool_name: str, agent_state: Any, **kwargs: Any
         if timeout is None:
             timeout = SANDBOX_EXECUTION_TIMEOUT
 
-        client = GrpcToolClient(server_url, auth_token, timeout=float(timeout))
+        client = HttpToolClient(api_url, auth_token, timeout=float(timeout))
         try:
             result = client.execute_tool(agent_id, tool_name, kwargs)
             return result
         finally:
             client.close()
 
-    except ImportError:
-        # Proto files not generated yet, fall back to error
-        raise RuntimeError(
-            "gRPC proto files not generated. Please run the server workflow first to generate them."
-        )
     except Exception as e:
-        raise RuntimeError(f"gRPC tool execution error: {str(e)}") from e
+        raise RuntimeError(f"HTTP tool execution error: {str(e)}") from e
 
 
 async def _execute_tool_locally(tool_name: str, agent_state: Any | None, **kwargs: Any) -> Any:

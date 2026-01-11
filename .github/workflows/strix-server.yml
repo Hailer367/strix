@@ -60,84 +60,8 @@ jobs:
             pip install jinja2 httpx tenacity requests pydantic rich docker textual xmltodict
           fi
           
-          # Install gRPC dependencies and PyNaCl for secret encryption
-          pip install grpcio grpcio-tools pynacl
-          echo "::endgroup::"
-
-      - name: Generate gRPC Code
-        run: |
-          set -euo pipefail
-          echo "::group::Generating gRPC code from proto files"
-          cd "$GITHUB_WORKSPACE"
-          
-          # Use PYTHONPATH to find the strix module (NO pip install -e .)
-          export PYTHONPATH="$GITHUB_WORKSPACE:${PYTHONPATH:-}"
-          
-          # Generate proto files using the script directly
-          python strix/runtime/remote_tool_server/generate_proto.py || {
-            echo "::warning::Direct script failed, trying module execution"
-            python -m strix.runtime.remote_tool_server.generate_proto
-          }
-          
-          echo "Generated gRPC code"
-          ls -la strix/runtime/remote_tool_server/proto/ || true
-          
-          # Fix imports in generated files - gRPC tools generates absolute imports
-          # that don't work with package structure. Convert to relative imports.
-          PROTO_DIR="strix/runtime/remote_tool_server/proto"
-          
-          # Fix tool_service_pb2_grpc.py: change 'import tool_service_pb2' to 'from . import tool_service_pb2'
-          if [ -f "$PROTO_DIR/tool_service_pb2_grpc.py" ]; then
-            sed -i 's/^import tool_service_pb2 as/from . import tool_service_pb2 as/' "$PROTO_DIR/tool_service_pb2_grpc.py"
-            echo "Fixed imports in tool_service_pb2_grpc.py"
-          fi
-          
-          # Verify proto files are importable by starting a fresh Python process
-          python -c "
-          import sys
-          import os
-          
-          # Debug: Print current working directory and PYTHONPATH
-          print(f'CWD: {os.getcwd()}')
-          print(f'PYTHONPATH: {os.environ.get(\"PYTHONPATH\", \"not set\")}')
-          
-          # Check if proto files exist on disk
-          proto_path = 'strix/runtime/remote_tool_server/proto/tool_service_pb2.py'
-          print(f'Proto file exists on disk: {os.path.exists(proto_path)}')
-          
-          # Now try the import - this is a fresh Python process so no caching issues
-          try:
-              from strix.runtime.remote_tool_server.proto import tool_service_pb2
-              print('Direct proto import: SUCCESS')
-          except ImportError as e:
-              print(f'Direct proto import: FAILED - {e}')
-              sys.exit(1)
-          
-          # Check server module
-          from strix.runtime.remote_tool_server import server
-          print(f'PROTO_AVAILABLE: {server.PROTO_AVAILABLE}')
-          print(f'tool_service_pb2: {server.tool_service_pb2}')
-          print(f'tool_service_pb2_grpc: {server.tool_service_pb2_grpc}')
-          
-          if not server.PROTO_AVAILABLE:
-              print('ERROR: PROTO_AVAILABLE is False in fresh Python process!')
-              print('This indicates the import in server.py itself is failing')
-              # Try to manually debug the import
-              import traceback
-              try:
-                  from strix.runtime.remote_tool_server.proto import tool_service_pb2
-                  from strix.runtime.remote_tool_server.proto import tool_service_pb2_grpc
-                  print('Manual re-import in same process: SUCCESS')
-              except ImportError:
-                  print('Manual re-import in same process: FAILED')
-                  traceback.print_exc()
-              sys.exit(1)
-          print('All checks passed!')
-          " || {
-            echo "::error::Proto files check failed"
-            exit 1
-          }
-          
+          # Install PyNaCl for secret encryption
+          pip install pynacl
           echo "::endgroup::"
 
       - name: Generate Server Token
@@ -149,7 +73,7 @@ jobs:
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
           echo "SERVER_TOKEN=$TOKEN" >> "$GITHUB_ENV"
 
-      - name: Start gRPC Server
+      - name: Start HTTP Server
         id: server
         env:
           STRIX_SERVER_PORT: ${{ env.SERVER_PORT }}
@@ -158,27 +82,19 @@ jobs:
           STRIX_TOOL_POOL_SIZE: "10"
         run: |
           set -euo pipefail
-          echo "::group::Starting gRPC Tool Server"
+          echo "::group::Starting HTTP Tool Server"
           
           # Set PYTHONPATH to include workspace
           export PYTHONPATH="$GITHUB_WORKSPACE:${PYTHONPATH:-}"
           
-          # Verify proto files were generated (correct path: strix/runtime not strix/strix/runtime)
-          if [ ! -f "$GITHUB_WORKSPACE/strix/runtime/remote_tool_server/proto/tool_service_pb2.py" ]; then
-            echo "::error::Proto files not generated"
-            exit 1
-          fi
-          
           # Test server import first
           cd "$GITHUB_WORKSPACE"
-          python -c "from strix.runtime.remote_tool_server.server import serve; print('Server module imported successfully')" || {
-            echo "::error::Failed to import server module"
-            python -c "from strix.runtime.remote_tool_server.server import serve" 2>&1
+          python -c "from strix.runtime.remote_tool_server.http_server import serve; print('HTTP Server module imported successfully')" || {
+            echo "::error::Failed to import HTTP server module"
             exit 1
           }
           
-          # Start server in background with all environment variables
-          # Use module execution with explicit PYTHONPATH
+          # Start HTTP server in background
           cd "$GITHUB_WORKSPACE"
           nohup env \
             PYTHONPATH="$GITHUB_WORKSPACE:${PYTHONPATH:-}" \
@@ -186,7 +102,7 @@ jobs:
             STRIX_SERVER_TOKEN="$STRIX_SERVER_TOKEN" \
             STRIXDB_TOKEN="$STRIXDB_TOKEN" \
             STRIX_TOOL_POOL_SIZE="$STRIX_TOOL_POOL_SIZE" \
-            python -m strix.runtime.remote_tool_server.server > /tmp/server.log 2>&1 &
+            python -m strix.runtime.remote_tool_server.http_server > /tmp/server.log 2>&1 &
           SERVER_PID=$!
           echo "$SERVER_PID" > /tmp/server.pid
           
@@ -209,7 +125,17 @@ jobs:
             exit 1
           fi
           
-          # Test server health (if possible)
+          # Test server health
+          sleep 2
+          HEALTH_CHECK=$(curl -s "http://localhost:${{ env.SERVER_PORT }}/health" 2>/dev/null || echo '{"error":"connection failed"}')
+          echo "Health check response: $HEALTH_CHECK"
+          
+          if echo "$HEALTH_CHECK" | grep -q '"healthy":true'; then
+            echo "✓ HTTP Server is healthy and responding!"
+          else
+            echo "::warning::Server started but health check failed. Response: $HEALTH_CHECK"
+          fi
+          
           echo "Server started with PID: $SERVER_PID"
           echo "server_pid=$SERVER_PID" >> "$GITHUB_OUTPUT"
           echo "::endgroup::"
@@ -220,8 +146,8 @@ jobs:
           set -euo pipefail
           echo "::group::Starting Cloudflared Tunnel"
           
-          # Start cloudflared tunnel pointing to gRPC server
-          # Note: gRPC requires TLS, so we use cloudflared's HTTPS tunnel
+          # Start cloudflared tunnel pointing to HTTP server
+          # HTTP mode works much better with cloudflared than gRPC
           nohup cloudflared tunnel --url http://localhost:${{ env.SERVER_PORT }} > /tmp/tunnel.log 2>&1 &
           TUNNEL_PID=$!
           echo "$TUNNEL_PID" > /tmp/tunnel.pid
@@ -246,19 +172,29 @@ jobs:
             exit 1
           fi
           
-          # Extract hostname for gRPC (remove https://)
+          # Extract hostname (remove https://)
           TUNNEL_HOST=$(echo "$DASHBOARD_URL" | sed 's|https://||')
           
           echo ""
           echo "╔══════════════════════════════════════════════════════════════╗"
-          echo "║  🌐 REMOTE TOOL SERVER TUNNEL URL                           ║"
+          echo "║  🌐 REMOTE HTTP TOOL SERVER TUNNEL URL                       ║"
           echo "║                                                              ║"
           echo "║  $DASHBOARD_URL"
           echo "║                                                              ║"
-          echo "║  gRPC Host: $TUNNEL_HOST"
-          echo "║  Port: 443 (HTTPS/TLS)                                       ║"
+          echo "║  Protocol: HTTP/HTTPS (Cloudflare-tunneled)                  ║"
           echo "╚══════════════════════════════════════════════════════════════╝"
           echo ""
+          
+          # Test tunnel connectivity
+          echo "Testing tunnel connectivity..."
+          TUNNEL_HEALTH=$(curl -s "$DASHBOARD_URL/health" 2>/dev/null || echo '{"error":"connection failed"}')
+          echo "Tunnel health check: $TUNNEL_HEALTH"
+          
+          if echo "$TUNNEL_HEALTH" | grep -q '"healthy":true'; then
+            echo "✓ Tunnel is working correctly!"
+          else
+            echo "::warning::Tunnel established but health check via tunnel failed"
+          fi
           
           echo "tunnel_url=$DASHBOARD_URL" >> "$GITHUB_OUTPUT"
           echo "tunnel_host=$TUNNEL_HOST" >> "$GITHUB_OUTPUT"
@@ -270,25 +206,25 @@ jobs:
           set -euo pipefail
           echo "::group::Updating CRED_TUNNEL secret"
           
-          TUNNEL_HOST="${{ steps.tunnel.outputs.tunnel_host }}"
+          TUNNEL_URL="${{ steps.tunnel.outputs.tunnel_url }}"
           SERVER_TOKEN="${{ steps.token.outputs.token }}"
           SERVER_TOKEN_SECRET="${{ secrets.SERVER_TOKEN }}"
           
-          if [ -z "$TUNNEL_HOST" ]; then
-            echo "::error::Tunnel host not available"
+          if [ -z "$TUNNEL_URL" ]; then
+            echo "::error::Tunnel URL not available"
             exit 1
           fi
           
           if [ -z "$SERVER_TOKEN_SECRET" ]; then
             echo "::warning::SERVER_TOKEN secret not set. Cannot update CRED_TUNNEL automatically."
-            echo "Please manually set CRED_TUNNEL secret to: $TUNNEL_HOST:443"
+            echo "Please manually set CRED_TUNNEL secret to: $TUNNEL_URL"
             echo "And set STRIX_SERVER_TOKEN secret to: $SERVER_TOKEN"
             echo "::endgroup::"
             exit 0
           fi
           
-          # Format: host:port for gRPC
-          CRED_VALUE="$TUNNEL_HOST:443"
+          # Format: Full HTTPS URL for HTTP mode
+          CRED_VALUE="$TUNNEL_URL"
           
           # Install PyNaCl for secret encryption
           pip install pynacl
@@ -321,12 +257,9 @@ jobs:
           echo "::group::Monitoring Server Health"
           
           SERVER_PID="${{ steps.server.outputs.server_pid }}"
-          TUNNEL_HOST="${{ steps.tunnel.outputs.tunnel_host }}"
+          TUNNEL_URL="${{ steps.tunnel.outputs.tunnel_url }}"
           SERVER_TIMEOUT_MINUTES="${{ env.SERVER_TIMEOUT }}"
           SERVER_TIMEOUT_SECONDS=$((SERVER_TIMEOUT_MINUTES * 60))
-          
-          # Export for Python script
-          export TUNNEL_HOST
           
           if [ -z "$SERVER_PID" ]; then
             echo "::error::Server PID not available"
@@ -350,32 +283,23 @@ jobs:
               exit 1
             fi
             
-            # Try to check server health via gRPC if tunnel is available
-            if [ -n "$TUNNEL_HOST" ] && [ $((ELAPSED % HEALTH_CHECK_INTERVAL)) -eq 0 ]; then
+            # Try to check server health via HTTP if tunnel is available
+            if [ -n "$TUNNEL_URL" ] && [ $((ELAPSED % HEALTH_CHECK_INTERVAL)) -eq 0 ]; then
               echo "Performing health check (elapsed: ${ELAPSED}s)..."
               
-              # Run health check - use a simple Python module invocation
-              HEALTH_CHECK_RESULT=0
-              PYTHONPATH="$GITHUB_WORKSPACE:${PYTHONPATH:-}" python3 -c '
-          import grpc, sys, os
-          from strix.runtime.remote_tool_server.proto import tool_service_pb2, tool_service_pb2_grpc
-          tunnel_host = os.environ.get("TUNNEL_HOST", "")
-          if not tunnel_host: sys.exit(1)
-          try:
-            channel = grpc.secure_channel(f"{tunnel_host}:443", grpc.ssl_channel_credentials())
-            stub = tool_service_pb2_grpc.ToolServiceStub(channel)
-            resp = stub.HealthCheck(tool_service_pb2.HealthRequest(), timeout=10)
-            print(f"Server healthy: {resp.tool_count} tools, {resp.registered_agents} agents" if resp.healthy else "Server unhealthy")
-            sys.exit(0 if resp.healthy else 1)
-          except Exception as e: print(f"Health check failed: {e}"); sys.exit(1)
-          finally:
-            try: channel.close()
-            except: pass
-              ' || HEALTH_CHECK_RESULT=$?
+              HEALTH_RESPONSE=$(curl -s --max-time 10 "$TUNNEL_URL/health" 2>/dev/null || echo '{"error":"timeout"}')
               
-              if [ "$HEALTH_CHECK_RESULT" -ne 0 ]; then
+              if echo "$HEALTH_RESPONSE" | grep -q '"healthy":true'; then
+                echo "✓ Server healthy"
+                FAILED_CHECKS=0  # Reset on success
+                
+                # Extract tool count from response
+                TOOL_COUNT=$(echo "$HEALTH_RESPONSE" | grep -oP '"tool_count":\s*\K\d+' || echo "?")
+                AGENTS=$(echo "$HEALTH_RESPONSE" | grep -oP '"registered_agents":\s*\K\d+' || echo "?")
+                echo "  Tools: $TOOL_COUNT, Agents: $AGENTS"
+              else
                 FAILED_CHECKS=$((FAILED_CHECKS + 1))
-                echo "::warning::Health check failed (${FAILED_CHECKS}/${MAX_FAILED_CHECKS})"
+                echo "::warning::Health check failed (${FAILED_CHECKS}/${MAX_FAILED_CHECKS}): $HEALTH_RESPONSE"
                 
                 if [ $FAILED_CHECKS -ge $MAX_FAILED_CHECKS ]; then
                   echo "::error::Server health checks failed ${MAX_FAILED_CHECKS} times. Server may be unhealthy."
@@ -385,8 +309,6 @@ jobs:
                   fi
                   # Don't exit - let it continue but log the issue
                 fi
-              else
-                FAILED_CHECKS=0  # Reset on success
               fi
             fi
             
