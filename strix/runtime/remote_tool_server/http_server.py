@@ -265,11 +265,18 @@ class ToolServerHandler(BaseHTTPRequestHandler):
         """Health check endpoint."""
         try:
             from strix.tools.registry import get_tool_names
-            from .connection_pool import get_connection_pool
             
-            metrics = get_metrics()
-            server_stats = metrics.get_server_stats()
-            pool_stats = get_connection_pool().get_stats()
+            # Get metrics if available
+            try:
+                metrics = get_metrics()
+                server_stats = metrics.get_server_stats()
+            except Exception:
+                server_stats = {
+                    "uptime_seconds": 0,
+                    "request_rate_per_minute": 0,
+                    "error_rate": 0,
+                    "total_requests": 0,
+                }
             
             # Check network connectivity
             network_status = "disconnected"
@@ -282,7 +289,7 @@ class ToolServerHandler(BaseHTTPRequestHandler):
             
             health_data = {
                 "healthy": True,
-                "version": "1.0.0",
+                "version": "1.0.0-http",
                 "registered_agents": len(_registered_agents),
                 "tool_count": len(get_tool_names()),
                 "network_status": network_status,
@@ -292,7 +299,6 @@ class ToolServerHandler(BaseHTTPRequestHandler):
                     "error_rate": server_stats.get("error_rate", 0),
                     "total_requests": server_stats.get("total_requests", 0),
                 },
-                "connection_pool": pool_stats,
             }
             
             self._send_json_response(health_data)
