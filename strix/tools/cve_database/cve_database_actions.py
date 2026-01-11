@@ -76,16 +76,64 @@ def _safe_request(
     headers: dict[str, str] | None = None,
     params: dict[str, Any] | None = None,
     timeout: int = 30,
+    max_retries: int = 3,
+    retry_delay: float = 2.0,
 ) -> dict[str, Any] | None:
-    """Make a safe HTTP request with error handling."""
-    try:
-        response = requests.get(url, headers=headers, params=params, timeout=timeout)
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException:
-        return None
-    except json.JSONDecodeError:
-        return None
+    """Make a safe HTTP request with error handling and retry logic.
+    
+    Args:
+        url: The URL to request
+        headers: Optional request headers
+        params: Optional query parameters
+        timeout: Request timeout in seconds
+        max_retries: Maximum number of retry attempts
+        retry_delay: Base delay between retries (exponential backoff applied)
+    
+    Returns:
+        JSON response data or None if all attempts fail
+    """
+    import time
+    import logging
+    
+    logger = logging.getLogger(__name__)
+    last_error = None
+    
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(url, headers=headers, params=params, timeout=timeout)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.Timeout as e:
+            last_error = f"Request timeout after {timeout}s"
+            logger.warning(f"CVE API timeout (attempt {attempt + 1}/{max_retries}): {last_error}")
+        except requests.exceptions.ConnectionError as e:
+            last_error = f"Connection error: {str(e)}"
+            logger.warning(f"CVE API connection error (attempt {attempt + 1}/{max_retries}): {last_error}")
+        except requests.exceptions.HTTPError as e:
+            status_code = e.response.status_code if e.response else "unknown"
+            last_error = f"HTTP {status_code}: {str(e)}"
+            logger.warning(f"CVE API HTTP error (attempt {attempt + 1}/{max_retries}): {last_error}")
+            # Don't retry on client errors (4xx) except 429 (rate limit)
+            if e.response and 400 <= e.response.status_code < 500 and e.response.status_code != 429:
+                return None
+        except requests.exceptions.RequestException as e:
+            last_error = f"Request error: {str(e)}"
+            logger.warning(f"CVE API request error (attempt {attempt + 1}/{max_retries}): {last_error}")
+        except json.JSONDecodeError as e:
+            last_error = f"JSON decode error: {str(e)}"
+            logger.warning(f"CVE API JSON error (attempt {attempt + 1}/{max_retries}): {last_error}")
+        except Exception as e:
+            last_error = f"Unexpected error: {str(e)}"
+            logger.warning(f"CVE API unexpected error (attempt {attempt + 1}/{max_retries}): {last_error}")
+        
+        # Wait before retry with exponential backoff
+        if attempt < max_retries - 1:
+            sleep_time = retry_delay * (2 ** attempt)
+            logger.info(f"Retrying CVE API in {sleep_time}s...")
+            time.sleep(sleep_time)
+    
+    logger.error(f"CVE API failed after {max_retries} attempts. Last error: {last_error}")
+    return None
 
 
 # =============================================================================
@@ -291,19 +339,62 @@ def query_cve_database(
     
     params["resultsPerPage"] = min(limit, 100)
     
-    # Make request
+    # Make request with retry logic
     headers = {
         "User-Agent": "Strix-Security-Agent/1.0",
         "Accept": "application/json",
     }
     
-    response_data = _safe_request(NVD_API_BASE, headers=headers, params=params, timeout=60)
+    response_data = _safe_request(
+        NVD_API_BASE, 
+        headers=headers, 
+        params=params, 
+        timeout=60,
+        max_retries=3,
+        retry_delay=2.0
+    )
     
     if not response_data:
+        # Try alternate NVD endpoint if primary fails
+        alt_nvd_base = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+        response_data = _safe_request(
+            alt_nvd_base, 
+            headers=headers, 
+            params=params, 
+            timeout=90,  # Longer timeout for fallback
+            max_retries=2,
+            retry_delay=3.0
+        )
+    
+    if not response_data:
+        # Return helpful information even when API fails
+        search_terms = []
+        if keyword:
+            search_terms.append(keyword)
+        if product:
+            search_terms.append(product)
+        if cve_id:
+            search_terms.append(cve_id)
+        
+        search_query = " ".join(search_terms) if search_terms else "vulnerability"
+        
         return {
             "success": False,
-            "error": "Failed to query NVD API. The service may be temporarily unavailable.",
+            "error": "Failed to query NVD API after multiple retries. The service may be temporarily unavailable or rate limited.",
             "source": "NVD",
+            "suggestion": "Try again in a few minutes, or use the manual search links below.",
+            "manual_search_links": {
+                "nvd": f"https://nvd.nist.gov/vuln/search/results?query={urllib.parse.quote(search_query)}",
+                "cvedetails": f"https://www.cvedetails.com/google-search-results.php?q={urllib.parse.quote(search_query)}",
+                "mitre": f"https://cve.mitre.org/cgi-bin/cvekey.cgi?keyword={urllib.parse.quote(search_query)}",
+                "exploitdb": f"https://www.exploit-db.com/search?q={urllib.parse.quote(search_query)}",
+            },
+            "troubleshooting": [
+                "The NVD API has rate limits (5 requests per 30 seconds for anonymous users)",
+                "Consider waiting 30 seconds before retrying",
+                "For more queries, consider using an NVD API key",
+                "Manual search via the links above is always available",
+            ],
         }
     
     # Parse results

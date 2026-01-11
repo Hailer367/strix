@@ -20,8 +20,38 @@ STRIX_IMAGE = os.getenv("STRIX_IMAGE", "ghcr.io/usestrix/strix-sandbox:0.1.10")
 _ci_env = os.getenv("CI", "").lower() == "true" or os.getenv("GITHUB_ACTIONS", "").lower() == "true"
 USE_HOST_NETWORK = os.getenv("STRIX_USE_HOST_NETWORK", str(_ci_env).lower()).lower() == "true"
 
+# Enable privileged mode for full root access in container (needed for apt, ping, etc.)
+# This grants full capabilities and device access to the container
+USE_PRIVILEGED_MODE = os.getenv("STRIX_PRIVILEGED_MODE", "true").lower() == "true"
+
 # DNS servers to use when not using host network (public DNS for reliability)
 FALLBACK_DNS_SERVERS = ["8.8.8.8", "8.8.4.4", "1.1.1.1"]
+
+# All Linux capabilities needed for full pentest functionality
+# See: https://man7.org/linux/man-pages/man7/capabilities.7.html
+ALL_CAPABILITIES = [
+    "NET_ADMIN",      # Network administration (iptables, routing, etc.)
+    "NET_RAW",        # Raw sockets (ping, packet capture)
+    "SYS_ADMIN",      # System administration (mount, etc.)
+    "SYS_PTRACE",     # Process tracing (debugging)
+    "SYS_CHROOT",     # Chroot operations
+    "SYS_RESOURCE",   # Resource limits override
+    "DAC_OVERRIDE",   # Bypass file permission checks
+    "SETUID",         # Set UID
+    "SETGID",         # Set GID
+    "CHOWN",          # Chown operations
+    "FOWNER",         # Bypass file ownership checks
+    "KILL",           # Send signals to any process
+    "AUDIT_WRITE",    # Write to audit log
+    "MKNOD",          # Create special files
+    "NET_BIND_SERVICE",  # Bind to privileged ports
+    "SETFCAP",        # Set file capabilities
+    "SETPCAP",        # Set process capabilities
+    "LINUX_IMMUTABLE",  # Immutable file attribute
+    "IPC_LOCK",       # Lock memory
+    "SYS_RAWIO",      # Raw I/O port access
+    "SYS_PACCT",      # Process accounting
+]
 
 logger = logging.getLogger(__name__)
 
@@ -151,11 +181,33 @@ class DockerRuntime(AbstractRuntime):
                     "command": "sleep infinity",
                     "detach": True,
                     "name": container_name,
-                    "cap_add": ["NET_ADMIN", "NET_RAW"],
                     "labels": {"strix-scan-id": scan_id},
                     "environment": container_env,
                     "tty": True,
                 }
+                
+                # Add privileged mode or full capabilities for root access
+                # This is required for tools like apt-get, ping, nmap raw scans, etc.
+                if USE_PRIVILEGED_MODE:
+                    run_kwargs["privileged"] = True
+                    logger.info("Using privileged mode for full root access in container")
+                else:
+                    # If not privileged, add all necessary capabilities
+                    run_kwargs["cap_add"] = ALL_CAPABILITIES
+                    logger.info(f"Adding {len(ALL_CAPABILITIES)} capabilities for pentest functionality")
+                
+                # Add sysctls for network functionality (ping, raw sockets, etc.)
+                # These are needed even without privileged mode
+                run_kwargs["sysctls"] = {
+                    "net.ipv4.ping_group_range": "0 2147483647",  # Allow ping without root
+                    "net.ipv4.ip_unprivileged_port_start": "0",   # Allow binding to any port
+                }
+                
+                # Security options to allow full access
+                run_kwargs["security_opt"] = [
+                    "seccomp=unconfined",  # Disable seccomp filtering
+                    "apparmor=unconfined",  # Disable AppArmor
+                ]
                 
                 if USE_HOST_NETWORK:
                     # Use host network for CI environments (GitHub Actions)
