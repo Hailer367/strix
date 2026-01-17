@@ -57,6 +57,41 @@ on:
           - quick
           - standard
           - deep
+          - whitebox
+      # =========================================================================
+      # WHITE-BOX SCANNING MODE
+      # =========================================================================
+      whitebox_mode:
+        description: '🔬 WHITE-BOX MODE: Enable source code scanning with comprehensive SAST tools'
+        required: false
+        default: false
+        type: boolean
+      # =========================================================================
+      # SCAN COMPLETION MODE - TIME-BASED vs VULNERABILITY-COUNT BASED
+      # =========================================================================
+      completion_mode:
+        description: 'Scan completion mode: time-based (default) or vulnerability-count based'
+        required: false
+        default: 'time'
+        type: choice
+        options:
+          - time
+          - vulnerability_count
+      target_vulnerability_count:
+        description: 'Target vulnerability count (only used if completion_mode is vulnerability_count)'
+        required: false
+        default: '5'
+        type: choice
+        options:
+          - '1'
+          - '3'
+          - '5'
+          - '10'
+          - '15'
+          - '20'
+          - '25'
+          - '50'
+          - '100'
       model:
         description: 'Qwen AI Model to use'
         required: false
@@ -92,6 +127,10 @@ env:
   DEFAULT_SCAN_MODE: 'standard'
   CLIPROXY_PORT: '8317'
   DASHBOARD_PORT: '8080'
+  # White-box scanning defaults
+  DEFAULT_WHITEBOX_MODE: 'false'
+  DEFAULT_COMPLETION_MODE: 'time'
+  DEFAULT_TARGET_VULN_COUNT: '5'
 
 jobs:
   strixer-scan:
@@ -774,6 +813,17 @@ jobs:
           ENABLE_STRIXDB="${{ github.event.inputs.enable_strixdb }}"
           [ -z "$ENABLE_STRIXDB" ] && ENABLE_STRIXDB="true"
           
+          # White-box and completion mode settings
+          WHITEBOX_MODE="${{ github.event.inputs.whitebox_mode || env.DEFAULT_WHITEBOX_MODE }}"
+          COMPLETION_MODE="${{ github.event.inputs.completion_mode || env.DEFAULT_COMPLETION_MODE }}"
+          TARGET_VULN_COUNT="${{ github.event.inputs.target_vulnerability_count || env.DEFAULT_TARGET_VULN_COUNT }}"
+          
+          # Adjust scan mode if whitebox is enabled
+          if [ "$WHITEBOX_MODE" == "true" ] && [ "$SCAN_MODE" != "whitebox" ]; then
+            SCAN_MODE="whitebox"
+            echo "White-box mode enabled, overriding scan_mode to 'whitebox'"
+          fi
+          
           # Create config for direct CLIProxyAPI mode (NO LiteLLM prefix needed)
           for CONFIG_DIR in "$GITHUB_WORKSPACE" "/tmp/strix"; do
             cat > "$CONFIG_DIR/config.json" << CONFIGEOF
@@ -793,7 +843,20 @@ jobs:
               "web_dashboard_port": ${{ env.DASHBOARD_PORT }}
             },
             "scan_mode": "$SCAN_MODE",
-            "direct_api_mode": true
+            "direct_api_mode": true,
+            "whitebox": {
+              "enabled": $WHITEBOX_MODE,
+              "sast_tools": ["semgrep", "bandit", "gosec", "gitleaks", "trufflehog", "trivy", "grype", "bearer", "horusec", "checkov"],
+              "secret_detection": true,
+              "dependency_scanning": true,
+              "iac_scanning": true
+            },
+            "completion": {
+              "mode": "$COMPLETION_MODE",
+              "target_vulnerability_count": $TARGET_VULN_COUNT,
+              "time_based_enabled": $([ "$COMPLETION_MODE" == "time" ] && echo "true" || echo "false"),
+              "vuln_count_based_enabled": $([ "$COMPLETION_MODE" == "vulnerability_count" ] && echo "true" || echo "false")
+            }
           }
           CONFIGEOF
           done
@@ -808,6 +871,24 @@ jobs:
           echo "  - StrixDB: $ENABLE_STRIXDB"
           echo "  - Dashboard: ${{ steps.tunnel.outputs.dashboard_url || 'local only' }}"
           echo "  - API Mode: Direct HTTP (no LiteLLM)"
+          echo "  ----------------------------------------"
+          echo "  WHITE-BOX SCANNING:"
+          echo "  - White-box Mode: $WHITEBOX_MODE"
+          if [ "$WHITEBOX_MODE" == "true" ]; then
+            echo "  - SAST Tools: semgrep, bandit, gosec, gitleaks, trufflehog, trivy, grype, bearer, horusec, checkov"
+            echo "  - Secret Detection: Enabled"
+            echo "  - Dependency Scanning: Enabled"
+            echo "  - IaC Scanning: Enabled"
+          fi
+          echo "  ----------------------------------------"
+          echo "  COMPLETION MODE:"
+          echo "  - Mode: $COMPLETION_MODE"
+          if [ "$COMPLETION_MODE" == "vulnerability_count" ]; then
+            echo "  - Target Vulnerability Count: $TARGET_VULN_COUNT"
+            echo "  - Time-based: DISABLED (will complete after finding target vulns)"
+          else
+            echo "  - Time-based: ENABLED (will complete after timeframe)"
+          fi
           echo "::endgroup::"
           
       - name: Prepare Instructions
@@ -815,12 +896,81 @@ jobs:
         run: |
           set -euo pipefail
           INSTRUCTIONS="${{ github.event.inputs.prompt }}"
+          
+          # Add StrixDB instructions if enabled
           if [ "${{ github.event.inputs.enable_strixdb }}" == "true" ]; then
             INSTRUCTIONS="$INSTRUCTIONS Save useful scripts, tools, exploits, methods to StrixDB."
           fi
+          
+          # =========================================================================
+          # WHITE-BOX SCANNING MODE INSTRUCTIONS
+          # =========================================================================
+          WHITEBOX_MODE="${{ github.event.inputs.whitebox_mode || env.DEFAULT_WHITEBOX_MODE }}"
+          if [ "$WHITEBOX_MODE" == "true" ]; then
+            INSTRUCTIONS="$INSTRUCTIONS
+
+          🔬 WHITE-BOX SCANNING MODE ACTIVATED - You are now operating in WHITE-BOX scanning mode with FULL SOURCE CODE ACCESS.
+
+          CRITICAL WHITE-BOX INSTRUCTIONS:
+          1. You have access to a MASSIVE arsenal of SAST/SCA tools - USE THEM ALL!
+          2. Run PARALLEL scans with: semgrep, bandit, gosec, gitleaks, trufflehog, trivy, grype, bearer, horusec
+          3. Perform MANUAL code review in addition to automated scanning
+          4. Follow data flows from user input to sensitive operations
+          5. Check for: hardcoded secrets, SQL injection, XSS, authentication bypasses, authorization flaws
+          6. Analyze dependencies for known vulnerabilities (CVEs)
+          7. Review IaC files with checkov, terrascan, kics, hadolint
+          8. YOU MUST RUN MULTIPLE TOOLS - different tools catch different issues
+          9. Validate findings with dynamic testing when possible
+          10. Create fixing agents to patch confirmed vulnerabilities
+
+          GITHUB ACTIONS CAPABILITY: You have access to STRIXDB_TOKEN which allows you to:
+          - Create GitHub Actions workflows to automate validation
+          - Build CI/CD pipelines for security scanning
+          - Create reproducible proof-of-concept demonstrations
+          - Set up automated testing for exploit validation
+          Use this capability wisely for comprehensive security assessment."
+          fi
+          
+          # =========================================================================
+          # VULNERABILITY COUNT-BASED SCANNING MODE
+          # =========================================================================
+          COMPLETION_MODE="${{ github.event.inputs.completion_mode || env.DEFAULT_COMPLETION_MODE }}"
+          TARGET_VULN_COUNT="${{ github.event.inputs.target_vulnerability_count || env.DEFAULT_TARGET_VULN_COUNT }}"
+          
+          if [ "$COMPLETION_MODE" == "vulnerability_count" ]; then
+            INSTRUCTIONS="$INSTRUCTIONS
+
+          🎯 VULNERABILITY COUNT-BASED SCANNING MODE ACTIVATED
+          
+          TARGET: Find exactly $TARGET_VULN_COUNT vulnerabilities before completing the scan.
+          
+          RULES:
+          - You MUST find at least $TARGET_VULN_COUNT confirmed vulnerabilities before calling finish_scan
+          - Each vulnerability MUST be validated with a working proof-of-concept
+          - Each vulnerability MUST be reported via create_vulnerability_report
+          - Time-based completion is DISABLED - focus on finding vulnerabilities, not watching the clock
+          - Quality over speed: Ensure each finding is legitimate and exploitable
+          - If you reach the target count, you may finish early
+          - If time expires before reaching the target, document partial findings
+          
+          IMPORTANT: The scan will NOT auto-complete based on time. You control when to finish based on vulnerability count."
+          else
+            INSTRUCTIONS="$INSTRUCTIONS
+
+          ⏱️ TIME-BASED SCANNING MODE (Default)
+          - You MUST use at least 80% of allocated timeframe before finishing
+          - Work continuously until time warning is received
+          - Do NOT finish early - use ALL available time for thorough testing"
+          fi
+          
           INSTRUCTIONS="$INSTRUCTIONS Use multi-action mode (up to 7 actions per call) for efficiency. Load-balanced across ${{ steps.decrypt.outputs.token_count }} Qwen accounts via CLIProxyAPI."
           INSTRUCTIONS=$(echo "$INSTRUCTIONS" | sed 's/"/\\"/g' | tr -d '\n')
           echo "instructions=$INSTRUCTIONS" >> "$GITHUB_OUTPUT"
+          
+          # Export configuration for later steps
+          echo "whitebox_mode=$WHITEBOX_MODE" >> "$GITHUB_OUTPUT"
+          echo "completion_mode=$COMPLETION_MODE" >> "$GITHUB_OUTPUT"
+          echo "target_vuln_count=$TARGET_VULN_COUNT" >> "$GITHUB_OUTPUT"
 
       - name: Run Strixer Security Scan
         id: strix
@@ -872,6 +1022,25 @@ jobs:
           BRAVE_API_KEY: ${{ secrets.BRAVE_API_KEY }}
           GOOGLE_CSE_API_KEY: ${{ secrets.GOOGLE_CSE_API_KEY }}
           GOOGLE_CSE_ID: ${{ secrets.GOOGLE_CSE_ID }}
+          # =========================================================================
+          # WHITE-BOX SCANNING MODE ENVIRONMENT VARIABLES
+          # =========================================================================
+          STRIX_WHITEBOX_MODE: ${{ github.event.inputs.whitebox_mode || 'false' }}
+          # =========================================================================
+          # VULNERABILITY COUNT-BASED COMPLETION MODE
+          # =========================================================================
+          STRIX_COMPLETION_MODE: ${{ github.event.inputs.completion_mode || 'time' }}
+          STRIX_TARGET_VULN_COUNT: ${{ github.event.inputs.target_vulnerability_count || '5' }}
+          # =========================================================================
+          # GITHUB ACTIONS WORKFLOW CREATION CAPABILITY
+          # Agents can use STRIXDB_TOKEN to create workflows for validation/automation
+          # =========================================================================
+          # Note: STRIXDB_TOKEN is already set above and agents are informed about this
+          # capability in the system prompt. They can use it to:
+          # - Create validation workflows for discovered vulnerabilities
+          # - Set up automated security scanning pipelines
+          # - Create proof-of-concept execution workflows
+          # - Build helper workflows for testing and validation
         run: |
           set +euo pipefail
           echo "::group::Running Strixer Security Scan (Direct CLIProxyAPI)"
@@ -879,21 +1048,49 @@ jobs:
           TIMEFRAME="${{ github.event.inputs.timeframe || env.DEFAULT_TIMEFRAME }}"
           SCAN_MODE="${{ github.event.inputs.scan_mode || env.DEFAULT_SCAN_MODE }}"
           INSTRUCTIONS="${{ steps.instructions.outputs.instructions }}"
+          WHITEBOX_MODE="${{ github.event.inputs.whitebox_mode || 'false' }}"
+          COMPLETION_MODE="${{ github.event.inputs.completion_mode || 'time' }}"
+          TARGET_VULN_COUNT="${{ github.event.inputs.target_vulnerability_count || '5' }}"
           
-          echo "=========================================="
-          echo "STRIXER SECURITY SCAN STARTING"
-          echo "=========================================="
-          echo "Target: $TARGET"
-          echo "Timeframe: $TIMEFRAME minutes"
-          echo "Scan Mode: $SCAN_MODE"
-          echo "Model: ${{ github.event.inputs.model || 'qwen3-coder-plus' }}"
-          echo "Accounts: ${{ steps.decrypt.outputs.token_count }}"
-          echo "CLIProxyAPI Endpoint: ${{ steps.cliproxy.outputs.endpoint }}"
-          echo "API Mode: Direct HTTP (no LiteLLM)"
-          if [ -n "${{ steps.tunnel.outputs.dashboard_url }}" ]; then
-            echo "Dashboard: ${{ steps.tunnel.outputs.dashboard_url }}"
+          # Override scan mode if whitebox is enabled
+          if [ "$WHITEBOX_MODE" == "true" ]; then
+            SCAN_MODE="whitebox"
           fi
-          echo "=========================================="
+          
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║           STRIXER SECURITY SCAN STARTING                     ║"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          echo "║  Target: $TARGET"
+          echo "║  Timeframe: $TIMEFRAME minutes"
+          echo "║  Scan Mode: $SCAN_MODE"
+          echo "║  Model: ${{ github.event.inputs.model || 'qwen3-coder-plus' }}"
+          echo "║  Accounts: ${{ steps.decrypt.outputs.token_count }}"
+          echo "║  CLIProxyAPI Endpoint: ${{ steps.cliproxy.outputs.endpoint }}"
+          echo "║  API Mode: Direct HTTP (no LiteLLM)"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          if [ "$WHITEBOX_MODE" == "true" ]; then
+            echo "║  🔬 WHITE-BOX MODE: ENABLED                                  ║"
+            echo "║  - Full source code analysis with SAST tools                ║"
+            echo "║  - Secret detection enabled                                 ║"
+            echo "║  - Dependency/SCA scanning enabled                          ║"
+            echo "║  - IaC scanning enabled                                     ║"
+          else
+            echo "║  🌐 BLACK-BOX MODE: Standard external testing               ║"
+          fi
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          if [ "$COMPLETION_MODE" == "vulnerability_count" ]; then
+            echo "║  🎯 COMPLETION: Vulnerability Count Based                   ║"
+            echo "║  - Target: Find $TARGET_VULN_COUNT vulnerabilities                            ║"
+            echo "║  - Time-based completion: DISABLED                          ║"
+          else
+            echo "║  ⏱️  COMPLETION: Time Based (Default)                        ║"
+            echo "║  - Must use 80% of timeframe before finishing               ║"
+          fi
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          if [ -n "${{ steps.tunnel.outputs.dashboard_url }}" ]; then
+            echo "║  📊 Dashboard: ${{ steps.tunnel.outputs.dashboard_url }}"
+          fi
+          echo "╚══════════════════════════════════════════════════════════════╝"
           
           # Verify CLIProxyAPI is still running before starting scan
           echo "Verifying CLIProxyAPI status..."
@@ -1072,6 +1269,14 @@ jobs:
           MODEL="${{ github.event.inputs.model || 'qwen3-coder-plus' }}"
           TARGET="${{ github.event.inputs.target }}"
           DASHBOARD_URL="${{ steps.tunnel.outputs.dashboard_url }}"
+          WHITEBOX_MODE="${{ github.event.inputs.whitebox_mode || 'false' }}"
+          COMPLETION_MODE="${{ github.event.inputs.completion_mode || 'time' }}"
+          TARGET_VULN_COUNT="${{ github.event.inputs.target_vulnerability_count || '5' }}"
+          
+          # Override scan mode if whitebox is enabled
+          if [ "$WHITEBOX_MODE" == "true" ]; then
+            SCAN_MODE="whitebox"
+          fi
           
           # Determine status emoji and text
           if [ "$TIMED_OUT" == "true" ]; then
@@ -1107,8 +1312,50 @@ jobs:
           | **Qwen Accounts** | $TOKEN_COUNT (load-balanced) |
           | **API Mode** | Direct CLIProxyAPI (No LiteLLM) |
           | **Exit Code** | $EXIT_CODE |
-          
           SUMMARY_EOF
+          
+          # Add White-box mode info
+          if [ "$WHITEBOX_MODE" == "true" ]; then
+            cat >> "$GITHUB_STEP_SUMMARY" << WHITEBOX_EOF
+          
+          ### 🔬 White-Box Scanning Mode
+          
+          | Feature | Status |
+          |---------|--------|
+          | **SAST Tools** | ✅ semgrep, bandit, gosec, bearer, horusec |
+          | **Secret Detection** | ✅ gitleaks, trufflehog, detect-secrets |
+          | **Dependency Scanning** | ✅ trivy, grype, osv-scanner |
+          | **IaC Scanning** | ✅ checkov, terrascan, kics, hadolint |
+          | **Code Quality** | ✅ eslint, pylint, golangci-lint |
+          
+          WHITEBOX_EOF
+          fi
+          
+          # Add Completion mode info
+          if [ "$COMPLETION_MODE" == "vulnerability_count" ]; then
+            cat >> "$GITHUB_STEP_SUMMARY" << VULN_MODE_EOF
+          
+          ### 🎯 Vulnerability Count-Based Completion
+          
+          | Setting | Value |
+          |---------|-------|
+          | **Target Count** | $TARGET_VULN_COUNT vulnerabilities |
+          | **Time-Based** | Disabled |
+          | **Found** | ${VULNS:-0} vulnerabilities |
+          
+          VULN_MODE_EOF
+          else
+            cat >> "$GITHUB_STEP_SUMMARY" << TIME_MODE_EOF
+          
+          ### ⏱️ Time-Based Completion
+          
+          | Setting | Value |
+          |---------|-------|
+          | **Duration** | $TIMEFRAME minutes |
+          | **Min Time Usage** | 80% required |
+          
+          TIME_MODE_EOF
+          fi
           
           # Add dashboard info if available
           DASHBOARD_URL="${{ steps.tunnel.outputs.dashboard_url }}"

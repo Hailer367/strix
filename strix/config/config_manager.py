@@ -120,6 +120,103 @@ class DashboardConfig:
 
 
 @dataclass
+class WhiteboxConfig:
+    """Configuration for white-box scanning mode."""
+    
+    # Enable white-box scanning mode
+    enabled: bool = False
+    
+    # List of SAST tools to use
+    sast_tools: list[str] = field(default_factory=lambda: [
+        "semgrep", "bandit", "gosec", "gitleaks", "trufflehog", 
+        "trivy", "grype", "bearer", "horusec", "checkov"
+    ])
+    
+    # Enable secret detection
+    secret_detection: bool = True
+    
+    # Enable dependency/SCA scanning
+    dependency_scanning: bool = True
+    
+    # Enable IaC scanning
+    iac_scanning: bool = True
+    
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "enabled": self.enabled,
+            "sast_tools": self.sast_tools,
+            "secret_detection": self.secret_detection,
+            "dependency_scanning": self.dependency_scanning,
+            "iac_scanning": self.iac_scanning,
+        }
+    
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "WhiteboxConfig":
+        """Create from dictionary."""
+        return cls(
+            enabled=data.get("enabled", False),
+            sast_tools=data.get("sast_tools", [
+                "semgrep", "bandit", "gosec", "gitleaks", "trufflehog",
+                "trivy", "grype", "bearer", "horusec", "checkov"
+            ]),
+            secret_detection=data.get("secret_detection", True),
+            dependency_scanning=data.get("dependency_scanning", True),
+            iac_scanning=data.get("iac_scanning", True),
+        )
+
+
+@dataclass
+class CompletionConfig:
+    """Configuration for scan completion mode."""
+    
+    # Completion mode: 'time' or 'vulnerability_count'
+    mode: str = "time"
+    
+    # Target number of vulnerabilities (for vulnerability_count mode)
+    target_vulnerability_count: int = 5
+    
+    # Time-based completion enabled
+    time_based_enabled: bool = True
+    
+    # Vulnerability count-based completion enabled
+    vuln_count_based_enabled: bool = False
+    
+    def validate(self) -> None:
+        """Validate completion configuration."""
+        if self.mode not in ["time", "vulnerability_count"]:
+            raise ValueError(
+                f"completion mode must be 'time' or 'vulnerability_count', "
+                f"got '{self.mode}'"
+            )
+        if self.target_vulnerability_count < 1:
+            raise ValueError(
+                f"target_vulnerability_count must be at least 1, "
+                f"got {self.target_vulnerability_count}"
+            )
+    
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "mode": self.mode,
+            "target_vulnerability_count": self.target_vulnerability_count,
+            "time_based_enabled": self.time_based_enabled,
+            "vuln_count_based_enabled": self.vuln_count_based_enabled,
+        }
+    
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "CompletionConfig":
+        """Create from dictionary."""
+        mode = data.get("mode", "time")
+        return cls(
+            mode=mode,
+            target_vulnerability_count=data.get("target_vulnerability_count", 5),
+            time_based_enabled=mode == "time",
+            vuln_count_based_enabled=mode == "vulnerability_count",
+        )
+
+
+@dataclass
 class StrixConfig:
     """Main configuration for Strix.
     
@@ -140,6 +237,17 @@ class StrixConfig:
         "dashboard": {
             "enabled": true,
             "refresh_interval": 1.0
+        },
+        "whitebox": {
+            "enabled": true,
+            "sast_tools": ["semgrep", "bandit", "gosec"],
+            "secret_detection": true,
+            "dependency_scanning": true,
+            "iac_scanning": true
+        },
+        "completion": {
+            "mode": "vulnerability_count",
+            "target_vulnerability_count": 10
         }
     }
     """
@@ -159,8 +267,14 @@ class StrixConfig:
     # Dashboard configuration
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
     
-    # Scan mode (quick, standard, deep)
+    # Scan mode (quick, standard, deep, whitebox)
     scan_mode: str = "deep"
+    
+    # White-box scanning configuration
+    whitebox: WhiteboxConfig = field(default_factory=WhiteboxConfig)
+    
+    # Completion mode configuration
+    completion: CompletionConfig = field(default_factory=CompletionConfig)
     
     # Enable StrixDB
     strixdb_enabled: bool = False
@@ -183,11 +297,16 @@ class StrixConfig:
         if not self.model:
             errors.append("model is required (e.g., 'gemini-2.5-pro', 'claude-sonnet-4')")
         
-        if self.scan_mode not in ["quick", "standard", "deep"]:
-            errors.append(f"scan_mode must be 'quick', 'standard', or 'deep', got '{self.scan_mode}'")
+        if self.scan_mode not in ["quick", "standard", "deep", "whitebox"]:
+            errors.append(f"scan_mode must be 'quick', 'standard', 'deep', or 'whitebox', got '{self.scan_mode}'")
         
         try:
             self.timeframe.validate()
+        except ValueError as e:
+            errors.append(str(e))
+        
+        try:
+            self.completion.validate()
         except ValueError as e:
             errors.append(str(e))
         
@@ -204,6 +323,8 @@ class StrixConfig:
             "timeframe": self.timeframe.to_dict(),
             "dashboard": self.dashboard.to_dict(),
             "scan_mode": self.scan_mode,
+            "whitebox": self.whitebox.to_dict(),
+            "completion": self.completion.to_dict(),
             "strixdb": {
                 "enabled": self.strixdb_enabled,
                 "repo": self.strixdb_repo,
@@ -225,6 +346,8 @@ class StrixConfig:
             timeframe=TimeframeConfig.from_dict(data.get("timeframe", {})),
             dashboard=DashboardConfig.from_dict(data.get("dashboard", {})),
             scan_mode=data.get("scan_mode", "deep"),
+            whitebox=WhiteboxConfig.from_dict(data.get("whitebox", {})),
+            completion=CompletionConfig.from_dict(data.get("completion", {})),
             strixdb_enabled=strixdb_config.get("enabled", False),
             strixdb_repo=strixdb_config.get("repo", ""),
             strixdb_token=strixdb_config.get("token", ""),
